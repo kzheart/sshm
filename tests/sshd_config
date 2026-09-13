@@ -1,0 +1,15 @@
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /etc/ssh/sshm_test_hostkey
+AuthorizedKeysFile /etc/ssh/sshm_test_authorized_keys
+StrictModes no
+PidFile /run/sshm-test.pid
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AllowUsers tester
+LogLevel VERBOSE
+MaxSessions 20
+Subsystem sftp internal-sftp
