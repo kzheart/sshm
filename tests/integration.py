@@ -93,6 +93,13 @@ class SSHIntegration(unittest.TestCase):
             " IdentityFile /fixture/client\n IdentitiesOnly yes\n"
             " UserKnownHostsFile /fixture/linux-known-hosts\n"
             " GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking yes\n")
+        checked(["docker", "exec", cls.container, "useradd", "-m", "-s", "/bin/sh", "passwordtester"])
+        cls.test_password = uuid.uuid4().hex + "-test-secret"
+        checked(["docker", "exec", "-i", cls.container, "chpasswd"],
+                input=f"passwordtester:{cls.test_password}\n".encode())
+        cls.password_config = cls.fixture / "password-config"
+        cls.password_config.write_text(cls.config.read_text().replace(" User tester", " User passwordtester") +
+                                       " PreferredAuthentications password\n PubkeyAuthentication no\n")
 
     def setUp(self):
         self.runtime = Path(tempfile.mkdtemp(prefix="sshm-it-", dir="/tmp"))
@@ -356,6 +363,75 @@ class SSHIntegration(unittest.TestCase):
             self.assertEqual((p.stdout, p.stderr), (b"linux-ok", b""))
         p = checked(base + ["doctor", "-F", "/fixture/linux-config"])
         self.assertIn("控制 socket 数: 1", p.stdout.decode())
+
+    def password_helper(self, text=None):
+        path = self.runtime / ("helper " + uuid.uuid4().hex[:8])
+        secret_file = self.runtime / (path.name + ".secret")
+        secret_file.write_text((text or self.test_password)+"\n")
+        secret_file.chmod(0o600)
+        path.write_text("#!/bin/sh\n[ \"$SSH_ASKPASS_PROMPT\" != confirm ] || exit 1\n"
+                        + "cat " + shlex.quote(str(secret_file)) + "\n")
+        path.chmod(0o700)
+        return path
+
+    def test_17_askpass_password_and_stdin_are_separate(self):
+        helper = self.password_helper()
+        data = b"remote stdin\x00\xff"
+        p = self.run_ssh("cat", "-F", str(self.password_config), "--askpass", str(helper), "--stdin", "-", input=data)
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, data, b""))
+        p = self.run_ssh("printf reused", "-F", str(self.password_config), "--askpass", str(helper))
+        self.assertEqual((p.returncode, p.stdout), (0, b"reused"), p.stderr)
+        self.assertEqual(len(self.sockets()), 1)
+        self.assertNotIn(self.test_password.encode(), p.stdout + p.stderr)
+
+    def test_18_askpass_is_explicit_and_helpers_do_not_share_auth(self):
+        good, bad = self.password_helper(), self.password_helper("wrong-fixture-password")
+        p = self.run_ssh("true", "-F", str(self.password_config))
+        self.assertEqual(p.returncode, 255, p.stderr)
+        p = self.run_ssh("true", "-F", str(self.password_config), "--askpass", str(good))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        p = self.run_ssh("printf must-not-run", "-F", str(self.password_config), "--askpass", str(bad))
+        self.assertEqual(p.returncode, 255, p.stderr)
+        self.assertEqual(p.stdout, b"")
+
+    def test_19_askpass_hang_is_bounded_by_timeout(self):
+        helper = self.runtime / "slow-helper"
+        marker = self.runtime / "helper-started"
+        helper.write_text("#!/bin/sh\nprintf '%s' $$ > " + shlex.quote(str(marker)) + "\nsleep 30\n")
+        helper.chmod(0o700)
+        p = self.run_ssh("true", "-F", str(self.password_config), "--askpass", str(helper), "--timeout", "800ms")
+        self.assertEqual(p.returncode, 124, p.stderr)
+        self.assertTrue(marker.exists(), "authentication helper was never started")
+        self.assertIn("结果未知", p.stderr.decode())
+
+    def test_20_encrypted_private_key_uses_askpass(self):
+        helper = self.password_helper()
+        key = self.runtime / "encrypted-key"
+        env = dict(self.env, SSH_ASKPASS=str(helper), SSH_ASKPASS_REQUIRE="force")
+        checked(["ssh-keygen", "-q", "-t", "ed25519", "-f", str(key)],
+                stdin=subprocess.DEVNULL, env=env)
+        with (self.fixture / "client.pub").open("a") as auth:
+            auth.write(key.with_suffix(".pub").read_text())
+        config = self.runtime / "encrypted-key-config"
+        config.write_text(self.config.read_text().replace(ssh_quote(self.fixture / "client"), ssh_quote(key)) +
+                          " IdentityAgent none\n PreferredAuthentications publickey\n")
+        p = self.run_ssh("printf decrypted", "-F", str(config), "--askpass", str(helper))
+        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"decrypted", b""))
+
+    def test_21_linux_password_helper_preserves_binary_stdin(self):
+        (self.fixture / "linux-password").write_text(self.test_password + "\n")
+        (self.fixture / "linux-password").chmod(0o600)
+        helper = self.fixture / "linux-askpass"
+        helper.write_text("#!/bin/sh\ncat /fixture/linux-password\n")
+        helper.chmod(0o700)
+        config = self.fixture / "linux-password-config"
+        config.write_text((self.fixture / "linux-config").read_text().replace(" User tester", " User passwordtester") +
+                          " PreferredAuthentications password\n PubkeyAuthentication no\n")
+        data = b"linux-password-stdin\x00\xff"
+        p = checked(["docker", "exec", "-i", self.container, "sshm", "exec", "fixture",
+                     "-F", "/fixture/linux-password-config", "--command", "cat", "--stdin", "-",
+                     "--askpass", "/fixture/linux-askpass"], input=data)
+        self.assertEqual((p.stdout, p.stderr), (data, b""))
 
 
 if __name__ == "__main__":

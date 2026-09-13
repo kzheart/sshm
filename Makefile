@@ -1,5 +1,5 @@
 GO ?= go
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 PREFIX ?= $(HOME)/.local
 
 .PHONY: build test check integration install dist

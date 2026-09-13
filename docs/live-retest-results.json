@@ -1,0 +1,38 @@
+{
+  "results": [
+    {
+      "host": "tencent",
+      "case": "password-auth-and-os",
+      "status": "passed",
+      "seconds": 1.793,
+      "note": "Linux"
+    },
+    {
+      "host": "tencent",
+      "case": "temporary-workspace",
+      "status": "passed",
+      "seconds": 2.983
+    },
+    {
+      "host": "tencent",
+      "case": "output-limits",
+      "status": "passed",
+      "seconds": 49.123
+    },
+    {
+      "host": "tencent",
+      "case": "complete-output-to-file",
+      "status": "passed",
+      "seconds": 47.848
+    },
+    {
+      "host": "tencent",
+      "case": "remote-and-local-cleanup",
+      "status": "passed",
+      "seconds": 0.919
+    }
+  ],
+  "original_config_and_known_hosts_unchanged": true,
+  "passed": 5,
+  "failed": 0
+}

@@ -177,18 +177,21 @@ func TestPrivateRuntimeAndCancelableLock(t *testing.T) {
 
 func TestControlIdentityChangesWithConfigAgentAndTTL(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "/agent-a")
-	p := controlPath("/tmp", []byte("user one\n"), time.Minute)
-	if p != controlPath("/tmp", []byte("user one\n"), time.Minute) {
+	p := controlPath("/tmp", []byte("user one\n"), time.Minute, "")
+	if p != controlPath("/tmp", []byte("user one\n"), time.Minute, "") {
 		t.Fatal("unstable key")
 	}
-	if p == controlPath("/tmp", []byte("user two\n"), time.Minute) {
+	if p == controlPath("/tmp", []byte("user two\n"), time.Minute, "") {
 		t.Fatal("mixed users")
 	}
-	if p == controlPath("/tmp", []byte("user one\n"), time.Second) {
+	if p == controlPath("/tmp", []byte("user one\n"), time.Second, "") {
 		t.Fatal("mixed TTLs")
 	}
+	if controlPath("/tmp", []byte("same\n"), time.Minute, "/helper-a") == controlPath("/tmp", []byte("same\n"), time.Minute, "/helper-b") {
+		t.Fatal("mixed credential helpers")
+	}
 	t.Setenv("SSH_AUTH_SOCK", "/agent-b")
-	if p == controlPath("/tmp", []byte("user one\n"), time.Minute) {
+	if p == controlPath("/tmp", []byte("user one\n"), time.Minute, "") {
 		t.Fatal("mixed agents")
 	}
 }

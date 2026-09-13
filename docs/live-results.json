@@ -1,0 +1,245 @@
+{
+  "results": [
+    {
+      "host": "macmini",
+      "case": "password-auth-and-os",
+      "status": "passed",
+      "seconds": 1.377,
+      "note": "Darwin"
+    },
+    {
+      "host": "macmini",
+      "case": "temporary-workspace",
+      "status": "passed",
+      "seconds": 0.51
+    },
+    {
+      "host": "macmini",
+      "case": "raw-streams-and-exit-codes",
+      "status": "passed",
+      "seconds": 0.325
+    },
+    {
+      "host": "macmini",
+      "case": "unicode-and-shell-quoting",
+      "status": "passed",
+      "seconds": 0.111
+    },
+    {
+      "host": "macmini",
+      "case": "stdin-eof-pipe-file-binary",
+      "status": "passed",
+      "seconds": 0.152
+    },
+    {
+      "host": "macmini",
+      "case": "script-over-stdin",
+      "status": "passed",
+      "seconds": 0.103
+    },
+    {
+      "host": "macmini",
+      "case": "independent-shell-state",
+      "status": "passed",
+      "seconds": 0.095
+    },
+    {
+      "host": "macmini",
+      "case": "output-limits",
+      "status": "passed",
+      "seconds": 0.255
+    },
+    {
+      "host": "macmini",
+      "case": "complete-output-to-file",
+      "status": "passed",
+      "seconds": 0.154
+    },
+    {
+      "host": "macmini",
+      "case": "concurrent-cold-calls",
+      "status": "passed",
+      "seconds": 0.617,
+      "note": "4 concurrent commands, one managed control socket"
+    },
+    {
+      "host": "macmini",
+      "case": "20-repeated-calls",
+      "status": "passed",
+      "seconds": 1.418,
+      "note": "20 sequential calls, one managed control socket"
+    },
+    {
+      "host": "macmini",
+      "case": "timeout-sibling-isolation",
+      "status": "passed",
+      "seconds": 1.062
+    },
+    {
+      "host": "macmini",
+      "case": "idle-connection-expiry",
+      "status": "passed",
+      "seconds": 2.474
+    },
+    {
+      "host": "macmini",
+      "case": "delayed-text-output",
+      "status": "passed",
+      "seconds": 0.693
+    },
+    {
+      "host": "macmini",
+      "case": "native-scp-roundtrip",
+      "status": "passed",
+      "seconds": 1.101,
+      "note": "native scp/SFTP backend, 32 KiB binary plus Unicode, exact round trip"
+    },
+    {
+      "host": "macmini",
+      "case": "native-sftp-batch",
+      "status": "passed",
+      "seconds": 0.553
+    },
+    {
+      "host": "macmini",
+      "case": "native-rsync-dry-run-and-update",
+      "status": "passed",
+      "seconds": 2.178
+    },
+    {
+      "host": "macmini",
+      "case": "native-interactive-terminal",
+      "status": "passed",
+      "seconds": 0.884
+    },
+    {
+      "host": "macmini",
+      "case": "remote-and-local-cleanup",
+      "status": "passed",
+      "seconds": 0.126
+    },
+    {
+      "host": "tencent",
+      "case": "password-auth-and-os",
+      "status": "passed",
+      "seconds": 3.424,
+      "note": "Linux"
+    },
+    {
+      "host": "tencent",
+      "case": "temporary-workspace",
+      "status": "passed",
+      "seconds": 1.576
+    },
+    {
+      "host": "tencent",
+      "case": "raw-streams-and-exit-codes",
+      "status": "passed",
+      "seconds": 3.852
+    },
+    {
+      "host": "tencent",
+      "case": "unicode-and-shell-quoting",
+      "status": "passed",
+      "seconds": 0.76
+    },
+    {
+      "host": "tencent",
+      "case": "stdin-eof-pipe-file-binary",
+      "status": "passed",
+      "seconds": 1.888
+    },
+    {
+      "host": "tencent",
+      "case": "script-over-stdin",
+      "status": "passed",
+      "seconds": 0.548
+    },
+    {
+      "host": "tencent",
+      "case": "independent-shell-state",
+      "status": "passed",
+      "seconds": 0.704
+    },
+    {
+      "host": "tencent",
+      "case": "output-limits",
+      "status": "failed",
+      "seconds": 30.006,
+      "error": "TimeoutExpired: Command '['/Users/kzheart/code/sshm/bin/sshm', 'exec', 'tencent', '-F', '/tmp/sshm-live-990wwjrg/tencent/ssh config', '--command', 'head -c 1048576 /dev/zero; head -c 8192 /dev/zero >&2', '--askpass', '/Users/kzheart/code/sshm/tests/toml_askpass.py', '--max-output', '1024']' timed out after 30 seconds"
+    },
+    {
+      "host": "tencent",
+      "case": "complete-output-to-file",
+      "status": "failed",
+      "seconds": 30.003,
+      "error": "TimeoutExpired: Command '['/Users/kzheart/code/sshm/bin/sshm', 'exec', 'tencent', '-F', '/tmp/sshm-live-990wwjrg/tencent/ssh config', '--command', 'head -c 1048576 /dev/zero', '--askpass', '/Users/kzheart/code/sshm/tests/toml_askpass.py', '--max-output', '0']' timed out after 30 seconds"
+    },
+    {
+      "host": "tencent",
+      "case": "concurrent-cold-calls",
+      "status": "passed",
+      "seconds": 2.068,
+      "note": "4 concurrent commands, one managed control socket"
+    },
+    {
+      "host": "tencent",
+      "case": "20-repeated-calls",
+      "status": "passed",
+      "seconds": 12.372,
+      "note": "20 sequential calls, one managed control socket"
+    },
+    {
+      "host": "tencent",
+      "case": "timeout-sibling-isolation",
+      "status": "passed",
+      "seconds": 1.449
+    },
+    {
+      "host": "tencent",
+      "case": "idle-connection-expiry",
+      "status": "passed",
+      "seconds": 4.893
+    },
+    {
+      "host": "tencent",
+      "case": "delayed-text-output",
+      "status": "passed",
+      "seconds": 2.054
+    },
+    {
+      "host": "tencent",
+      "case": "native-scp-roundtrip",
+      "status": "passed",
+      "seconds": 8.144,
+      "note": "native scp/SFTP backend, 32 KiB binary plus Unicode, exact round trip"
+    },
+    {
+      "host": "tencent",
+      "case": "native-sftp-batch",
+      "status": "passed",
+      "seconds": 5.222
+    },
+    {
+      "host": "tencent",
+      "case": "native-rsync-dry-run-and-update",
+      "status": "passed",
+      "seconds": 9.182
+    },
+    {
+      "host": "tencent",
+      "case": "native-interactive-terminal",
+      "status": "passed",
+      "seconds": 3.45
+    },
+    {
+      "host": "tencent",
+      "case": "remote-and-local-cleanup",
+      "status": "passed",
+      "seconds": 0.859
+    }
+  ],
+  "original_config_and_known_hosts_unchanged": true,
+  "passed": 36,
+  "failed": 2
+}

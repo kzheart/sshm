@@ -148,6 +148,7 @@ func validHost(host string) bool {
 
 type execOptions struct {
 	config, host, command, input string
+	askpass                      string
 	timeout, persist             time.Duration
 	maxOutput                    int64
 	debug                        bool
@@ -159,6 +160,7 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 	o := execOptions{}
 	f.StringVar(&o.command, "command", "", "必填：远端命令字符串；调用端应正确引用本地 shell 参数")
 	f.StringVar(&o.input, "stdin", "", "读取指定文件作为 stdin；- 表示继承调用端 stdin")
+	f.StringVar(&o.askpass, "askpass", "", "显式使用 OpenSSH 认证辅助程序（返回密码或密钥口令）；不占用远端 stdin")
 	f.DurationVar(&o.timeout, "timeout", 2*time.Minute, "本地总等待期限，包含配置解析和连接；0 表示无限")
 	f.DurationVar(&o.persist, "persist", time.Minute, "OpenSSH 控制连接空闲期限；0 禁用复用（不是永久保持）")
 	f.Int64Var(&o.maxOutput, "max-output", 65536, "每个输出流最多显示的字节数；0 完整流式输出，可重定向到文件")
@@ -178,6 +180,16 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 		return parseError(err, stderr)
 	}
 	o.host = f.Arg(0)
+	if o.askpass != "" {
+		o.askpass, err = exec.LookPath(o.askpass)
+		if err != nil {
+			return parseError(fmt.Errorf("认证辅助程序不可执行：%w", err), stderr)
+		}
+		o.askpass, err = filepath.Abs(o.askpass)
+		if err != nil {
+			return parseError(err, stderr)
+		}
+	}
 	ssh, err := exec.LookPath("ssh")
 	if err != nil {
 		fmt.Fprintf(stderr, "sshm: 本地错误：找不到 OpenSSH 客户端：%v\n", err)

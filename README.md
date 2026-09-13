@@ -74,6 +74,7 @@ sshm exec my-server --command '远端命令' --max-output 0 > result.txt
 | `--command` | 必填 | 远端命令字符串 |
 | `-F` / `--config` | 系统默认 | OpenSSH 配置入口 |
 | `--stdin` | EOF | 普通文件路径，或 `-` 继承 stdin |
+| `--askpass` | 不启用 | 显式指定 OpenSSH 密码/密钥口令辅助程序；不占用远端 stdin |
 | `--timeout` | `2m` | 配置解析、等待连接锁、连接和执行的本地总期限；`0` 无限 |
 | `--max-output` | `65536` | 每个输出流显示的字节上限；`0` 不截断 |
 | `--persist` | `1m` | 控制连接空闲期限；`0` 禁用本次复用，不会永久保持 |
@@ -81,7 +82,9 @@ sshm exec my-server --command '远端命令' --max-output 0 > result.txt
 
 输出保留原始 stdout 和 stderr，没有默认 JSON 或成功装饰。超过上限后继续排空输出，内存不随总输出增长；结束时在 stderr 报告省略的字节数。上限按字节计算，可能截在多字节字符中间；二进制完整传输请使用 `--max-output 0` 或专用文件传输工具。
 
-普通执行固定非交互：`BatchMode=yes`、无 PTY、禁用配置中的 `LocalCommand` 和端口转发，覆盖 `RemoteCommand`、`SessionType`、后台启动和 stdin 设置，以保证执行的是本次显式命令且等待其结果。连接超时设为 10 秒，总期限仍由 `--timeout` 限制。身份、密钥、跳板机、代理和主机密钥策略沿用 OpenSSH 配置。需要密码输入、MFA 或交互问答时用原生 SSH。
+普通执行默认 `BatchMode=yes`、无 PTY，禁用配置中的 `LocalCommand` 和端口转发，覆盖 `RemoteCommand`、`SessionType`、后台启动和 stdin 设置，以保证执行的是本次显式命令且等待其结果。连接超时设为 10 秒，总期限仍由 `--timeout` 限制。身份、密钥、跳板机、代理和主机密钥策略沿用 OpenSSH 配置。
+
+0.1.1 增加显式的 `--askpass /path/to/helper`：设置 `BatchMode=no`、`NumberOfPasswordPrompts=1`，并通过 `SSH_ASKPASS_REQUIRE=force` 让 OpenSSH 调用该程序取得密码或密钥口令。辅助程序路径可以包含空格；CLI 不读取或保存返回的凭据，也不占用远端 stdin。辅助程序应把凭据写到自己的 stdout、拒绝不认识的提示和主机密钥确认，并避免输出敏感日志。辅助程序卡住时同样受总期限约束。需要人参与的 MFA 或终端问答仍使用原生 SSH。
 
 为复用连接而进行的 `ssh -G` 配置求值**可能执行可信本地配置中的 `Match exec`**，实际 SSH 调用也可能再次求值。因此不应把非幂等操作放进 Match exec；本工具不把外部下载的配置当成可信输入。
 
@@ -128,7 +131,7 @@ sftp my-server
 
 短命 CLI 调用 OpenSSH `ControlMaster=auto` / `ControlPersist`，没有自建守护进程。控制 socket 默认存放在 `/tmp/sshm-UID`，目录必须由当前用户拥有且不允许其他用户访问，也不能是符号链接。`SSHM_RUNTIME_DIR` 可指定更短的私有目录；路径长度受 Unix socket 限制。
 
-连接标识包含当前目标的 OpenSSH 有效配置、`SSH_AUTH_SOCK` 和空闲期限。并发首次连接通过文件锁协调；OpenSSH 发布控制 socket 后释放锁，因此远端命令可并行，不为每个 Agent 单独维护连接池。暖连接检查走本地控制 socket，不额外发送远端 `echo ping`。
+连接标识包含当前目标的 OpenSSH 有效配置、`SSH_AUTH_SOCK`、认证辅助程序路径和空闲期限。并发首次连接通过文件锁协调；OpenSSH 发布控制 socket 后释放锁，因此远端命令可并行，不为每个 Agent 单独维护连接池。暖连接检查走本地控制 socket，不额外发送远端 `echo ping`。
 
 空闲超时由 OpenSSH 处理，活动命令不因空闲期限而被中断。没有应用级定时保活或自动重试。后台 SSH master 是有期限的预期资源；锁文件是每个连接配置一个的小文件，不是活进程，运行期间不能随意删除锁文件。
 
@@ -145,10 +148,23 @@ make check
 make integration
 ```
 
+使用 SSH Manager TOML 测试真实服务器（显式选择目标，使用 Python 3.11+）：
+
+```sh
+python3 tests/live.py \
+  --toml "$HOME/.codex/ssh-config.toml" \
+  --hosts macmini tencent \
+  --report /tmp/sshm-live-results.json
+```
+
+这不是 `make integration` 的默认步骤。真实测试会登录指定服务器，在唯一的 `/tmp/sshm-live-*` 目录内创建、传输和同步测试文件，完成后校验标记并清理；应在用户允许测试这些目标的范围内运行。TOML 只由测试适配器读取并生成临时 OpenSSH 配置，CLI 的 `-F` 仍接受 OpenSSH 配置，不直接接受 TOML。密码由测试 askpass 辅助程序从原文件读取，不复制到临时配置或命令参数。认证使用现有 `known_hosts` 并严格校验，不自动信任新主机。
+
+真实测试中的 1 MiB 输出默认允许 90 秒，可用 `--transfer-timeout` 调整；重测单项使用 `--cases output-limits complete-output-to-file`。网络较慢时不要将测试程序自己的短等待期限误判成远端命令失败。测试程序超时先发送 SIGTERM，让 CLI 回收子进程。
+
 集成测试生成临时密钥，启动只发布到 `127.0.0.1` 的一次性 SSH 容器，使用独立配置和已固定的主机公钥，不读取开发者的服务器密钥、不连接真实服务器。测试结束后关闭自己的控制连接并删除容器和临时文件。测试镜像保留在本机供下次复用。镜像中的 `StrictModes no` 仅用于跨 macOS/Linux 的测试卷属主兼容，不用于客户端设置。
 
 测试覆盖真实命令结果、stdin、20 MB 输出、并发冷启动连接复用、空闲退出、超时与并行任务隔离、前台进程回收，以及原生 SSH 的 PTY 问答。另有候选发现、引号、参数、锁和连接标识单元测试。
 
-第一版优先验证 macOS 客户端到 Linux OpenSSH 服务端。发布包的 Linux 客户端另作运行检查。Windows、BSD 和网络设备的服务端兼容性依赖它们提供的标准 SSH 执行能力，未逐一做设备实测；本地 Windows 客户端暂不提供。
+已验证 macOS 客户端到真实 macOS / Linux 服务器，含密码认证和原生终端交互；Linux 客户端在隔离服务器上验证密钥、密码、stdin 和复用。记录见 [初版隔离验证](docs/validation.md) 与 [真实服务器验证](docs/live-validation.md)。Windows、BSD 和网络设备的服务端兼容性依赖它们提供的标准 SSH 执行能力，尚未做设备实测；本地 Windows 客户端暂不提供。
 
 源码的设计依据：[OpenSSH 客户端](https://man.openbsd.org/ssh)、[SSH 配置](https://man.openbsd.org/ssh_config)、[Go 进程管理](https://pkg.go.dev/os/exec)、[Agent Skills](https://agentskills.io/specification)。

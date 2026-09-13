@@ -16,15 +16,22 @@ import (
 	"time"
 )
 
-func sshOptions(config string) []string {
+func sshOptions(o execOptions) []string {
+	batch := "yes"
+	if o.askpass != "" {
+		batch = "no"
+	}
 	args := []string{
-		"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+		"-T", "-o", "BatchMode=" + batch, "-o", "ConnectTimeout=10",
 		"-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none",
 		"-o", "SessionType=default", "-o", "ForkAfterAuthentication=no",
 		"-o", "StdinNull=no", "-o", "PermitLocalCommand=no",
 	}
-	if config != "" {
-		args = append(args, "-F", config)
+	if o.askpass != "" {
+		args = append(args, "-o", "NumberOfPasswordPrompts=1")
+	}
+	if o.config != "" {
+		args = append(args, "-F", o.config)
 	}
 	return args
 }
@@ -33,11 +40,13 @@ func sshOptions(config string) []string {
 // Match, ProxyJump, authentication and identity resolution. -G does not open an
 // SSH connection, but trusted config's Match exec may run local commands.
 func effectiveConfig(ctx context.Context, ssh string, o execOptions) ([]byte, error) {
-	args := append(sshOptions(o.config), "-G", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "--", o.host, o.command)
+	args := append(sshOptions(o), "-G", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "--", o.host, o.command)
 	var out, diag bytes.Buffer
 	w := &limitedWriter{out: &out, limit: 1024 * 1024}
 	e := &limitedWriter{out: &diag, limit: 16384}
-	err := command(ctx, ssh, args, nil, w, e).Run()
+	c := command(ctx, ssh, args, nil, w, e)
+	applyAskpass(c, o.askpass)
+	err := c.Run()
 	if err != nil {
 		return nil, fmt.Errorf("OpenSSH 配置解析失败：%w\n%s", err, strings.TrimSpace(diag.String()))
 	}
@@ -47,13 +56,13 @@ func effectiveConfig(ctx context.Context, ssh string, o execOptions) ([]byte, er
 	return out.Bytes(), nil
 }
 
-func controlPath(dir string, config []byte, persist time.Duration) string {
+func controlPath(dir string, config []byte, persist time.Duration, askpass string) string {
 	h := sha256.New()
 	h.Write([]byte("sshm-control-v1\x00"))
 	h.Write(config)
 	// The same endpoint with a different agent must not silently share auth or
 	// forwarded-agent state. Persist is part of the key so its TTL stays truthful.
-	fmt.Fprintf(h, "\x00%s\x00%d", os.Getenv("SSH_AUTH_SOCK"), persist)
+	fmt.Fprintf(h, "\x00%s\x00%d\x00%s", os.Getenv("SSH_AUTH_SOCK"), persist, askpass)
 	return filepath.Join(dir, "c-"+hex.EncodeToString(h.Sum(nil))[:32])
 }
 
@@ -66,7 +75,7 @@ func socketAlive(ctx context.Context, ssh, path string) bool {
 }
 
 func execute(ctx context.Context, ssh string, o execOptions, stdin *os.File, stdout, stderr io.Writer) int {
-	args := sshOptions(o.config)
+	args := sshOptions(o)
 	var unlock func()
 	var socket string
 	if o.persist > 0 {
@@ -78,7 +87,7 @@ func execute(ctx context.Context, ssh string, o execOptions, stdin *os.File, std
 		if err != nil {
 			return localFailure(ctx, stderr, err, false)
 		}
-		socket = controlPath(dir, cfg, o.persist)
+		socket = controlPath(dir, cfg, o.persist, o.askpass)
 		unlock, err = acquireLock(ctx, socket+".lock")
 		if err != nil {
 			return localFailure(ctx, stderr, err, false)
@@ -112,6 +121,7 @@ func execute(ctx context.Context, ssh string, o execOptions, stdin *os.File, std
 	out := &limitedWriter{out: stdout, limit: o.maxOutput, abort: abort}
 	diag := &limitedWriter{out: stderr, limit: o.maxOutput, abort: abort}
 	c := command(runCtx, ssh, args, stdin, out, diag)
+	applyAskpass(c, o.askpass)
 	if err := c.Start(); err != nil {
 		if unlock != nil {
 			unlock()
@@ -170,6 +180,20 @@ func execute(ctx context.Context, ssh string, o execOptions, stdin *os.File, std
 		}
 	}
 	return code
+}
+
+// Reuse OpenSSH's credential-helper mechanism. The CLI never receives or
+// stores the returned credential and stdin stays dedicated to the remote job.
+func applyAskpass(c *exec.Cmd, program string) {
+	if program == "" {
+		return
+	}
+	for _, v := range os.Environ() {
+		if !strings.HasPrefix(v, "SSH_ASKPASS=") && !strings.HasPrefix(v, "SSH_ASKPASS_REQUIRE=") {
+			c.Env = append(c.Env, v)
+		}
+	}
+	c.Env = append(c.Env, "SSH_ASKPASS="+program, "SSH_ASKPASS_REQUIRE=force")
 }
 
 func localFailure(ctx context.Context, out io.Writer, err error, started bool) int {

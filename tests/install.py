@@ -8,6 +8,8 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = subprocess.run([str(ROOT / "bin/sshm"), "--version"], check=True,
+                         capture_output=True, text=True).stdout.strip().split()[1]
 
 
 def check_install(source, base):
@@ -17,7 +19,7 @@ def check_install(source, base):
         subprocess.run(argv, check=True, capture_output=True)
     result = subprocess.run([str(prefix / "bin/sshm"), "--version"], check=True,
                             capture_output=True, text=True)
-    assert result.stdout.strip() == "sshm 0.1.0", result.stdout
+    assert result.stdout.strip() == f"sshm {VERSION}", result.stdout
     assert (skills / "sshm/SKILL.md").read_bytes() == (ROOT / "skills/sshm/SKILL.md").read_bytes()
     assert not list(prefix.rglob(".sshm-install.*"))
     assert not list(skills.rglob(".SKILL-install.*"))
@@ -26,7 +28,7 @@ def check_install(source, base):
 with tempfile.TemporaryDirectory(prefix="sshm-install-") as temp:
     base = Path(temp)
     check_install(ROOT, base / "source")
-    checksums = ROOT / "dist/SHA256SUMS-0.1.0"
+    checksums = ROOT / f"dist/SHA256SUMS-{VERSION}"
     lines = checksums.read_text().splitlines()
     assert len(lines) == 4, lines
     for line in lines:
@@ -38,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix="sshm-install-") as temp:
             assert sorted(names) == ["README.md", "SKILL.md", "install.sh", "sshm"], names
     target_os = "darwin" if platform.system() == "Darwin" else "linux"
     arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "amd64"
-    name = f"sshm_0.1.0_{target_os}_{arch}"
+    name = f"sshm_{VERSION}_{target_os}_{arch}"
     with tarfile.open(ROOT / "dist" / f"{name}.tar.gz") as tar:
         tar.extractall(base, filter="data")
     check_install(base / name, base / "release")

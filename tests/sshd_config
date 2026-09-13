@@ -5,11 +5,11 @@ AuthorizedKeysFile /etc/ssh/sshm_test_authorized_keys
 StrictModes no
 PidFile /run/sshm-test.pid
 UsePAM no
-PasswordAuthentication no
+PasswordAuthentication yes
 KbdInteractiveAuthentication no
 PermitRootLogin no
 PubkeyAuthentication yes
-AllowUsers tester
+AllowUsers tester passwordtester
 LogLevel VERBOSE
 MaxSessions 20
 Subsystem sftp internal-sftp
