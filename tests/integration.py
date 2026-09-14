@@ -48,6 +48,10 @@ class Fixture:
     def __enter__(self):
         self.root = Path(tempfile.mkdtemp(prefix='sshm-v2-', dir='/tmp'))
         self.container = 'sshm-v2-' + uuid.uuid4().hex[:10]
+        self.old_runtime = os.environ.get('SSHM_RUNTIME_DIR')
+        self.runtime = self.root/'runtime'
+        self.runtime.mkdir(mode=0o700)
+        os.environ['SSHM_RUNTIME_DIR'] = str(self.runtime)
         self.password = uuid.uuid4().hex
         try:
             for key in ('client', 'host'):
@@ -115,6 +119,15 @@ proxy_jump = "fixture"
 
     def __exit__(self, *args):
         subprocess.run(['docker', 'rm', '-f', self.container], capture_output=True, timeout=20)
+        # Only the daemon whose exact argv names this isolated fixture directory.
+        listing = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True).stdout
+        for line in listing.splitlines():
+            fields = line.strip().split(None, 1)
+            if len(fields)==2 and fields[1] == f'{BINARY} _serve {self.runtime}':
+                try: os.kill(int(fields[0]), signal.SIGTERM)
+                except ProcessLookupError: pass
+        if self.old_runtime is None: os.environ.pop('SSHM_RUNTIME_DIR', None)
+        else: os.environ['SSHM_RUNTIME_DIR'] = self.old_runtime
         shutil.rmtree(self.root)
 
     def argv(self, cmd, host='fixture', *extra):

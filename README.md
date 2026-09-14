@@ -88,11 +88,20 @@ sshm exec example --command '远端命令' --max-output 0 > result.bin
 
 ## 生命周期与性能
 
-每次 CLI 调用拥有自己的连接和跳板链，结束时关闭。没有守护进程、连接池、控制 socket、自动重试或跨进程复用。持续 shell 和一次文件传输在自身调用内保持连接；不同 exec 的目录与变量不共享。
+`exec` 默认由同一个二进制按需启动本用户的短期连接服务；多个 Agent 共用它。服务不注册到系统启动项，不依赖外部程序。每个配置路径与主机别名最多一条可复用连接，每次命令使用独立 SSH 通道，不共享目录或变量。`shell` 和 `copy` 继续使用独立连接。
 
-这种结构减少了后台残留来源，但每次新调用仍需握手。确定的多步操作可合并到一次命令或脚本，避免重复握手。SIGINT/SIGTERM/SIGHUP、总期限和本地输出失败会关闭本次连接；SIGKILL 时操作系统回收进程的本地 socket。任何本地取消都不保证远端整个进程树已停止。
+- `exec --fresh` 强制新连接，调用结束立即关闭；也可作为性能对照。`--debug` 显示 `reused=true/false`。
+- 每条连接空闲 60 秒关闭；没有任务后服务空闲约 60 秒退出，并删除 socket。文件锁确保并发启动时只产生一个服务。
+- 最多缓存 32 条连接，每条最多 8 个并发命令，超出排队且总期限继续计时；服务最多接收 64 个同时进行的请求。忙时可返回本地连接错误。
+- 每次调用重新读取配置，检查私钥权限，并核对连接参数、私钥与 known_hosts 内容；变化后重新认证。服务器端撤销凭据不会自动终止已经认证的连接，需要立即重新认证时使用 `--fresh`。
+- 取消或输出失败会停止复用该连接；已有其他命令可以完成，之后关闭底层连接。SSH 通道关闭可能要等远端确认，因此不能只发出关闭请求就把资源当作已回收。
+- 每 10 秒探测连接存活，5 秒无响应则关闭失效连接。真实传输故障会影响该连接上的所有命令。断线后下一次调用重新连接，但结果未知的命令绝不自动重放。
+- 本地控制 socket 位于 `/tmp/sshm-UID/control.sock`，目录 700、socket 600。可用 `SSHM_RUNTIME_DIR` 指定另一个专属目录用于隔离测试；不同目录是不同服务。内部协议不会改变 CLI 的纯文本与二进制流输出，也不把凭据或命令记录到磁盘。
+- 服务无法启动时，在提交远端执行请求之前自动退回独立连接；请求提交之后失败不会退回重试。SIGKILL 导致调用端 socket 关闭时，服务也会取消该调用。
 
-内存与吞吐、首次调用与旧版复用调用的差别，以及 1,000 次连接压力测试，见源码中的 `docs/v2-validation.md`。数据来自明确记录的测试环境，不代表所有网络或设备。
+任何本地取消都不保证远端整个进程树已停止。确定的多步操作仍可合并到一次命令或脚本，减少通道往返。新版本增加一个短期 Go 进程及缓存连接的内存开销，换取重复调用延迟下降；并非每次首次连接都会更快。
+
+0.3.0 的真实延迟、并发、进程与空闲回收验证见 `docs/v3-validation.md`；0.2.0 的独立连接基线见 `docs/v2-validation.md`。
 
 ## 从 0.1.x 迁移
 
@@ -105,7 +114,8 @@ sshm exec example --command '远端命令' --max-output 0 > result.bin
 ```sh
 make check
 make integration               # Docker 内的隔离真实 sshd
-python3 tests/performance.py    # 与 OpenSSH / 可选旧版 CLI 对照
+python3 tests/reuse.py          # 复用/新连接对照、1000 次调用、故障及 60 秒退出
+python3 tests/reuse.py --live macmini tencent --report docs/reuse-live-results.json
 python3 tests/memory.py         # 1 MiB、64 MiB、256 MiB 内存与 CPU
 python3 tests/live.py --hosts macmini tencent  # 仅在用户授权目标上执行
 ```

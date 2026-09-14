@@ -1,0 +1,38 @@
+{
+  "macmini": {
+    "fresh": {
+      "samples": 15,
+      "p50_ms": 641.302,
+      "p95_ms": 890.63,
+      "p99_ms": 890.63
+    },
+    "reused": {
+      "samples": 15,
+      "p50_ms": 78.867,
+      "p95_ms": 111.334,
+      "p99_ms": 111.334
+    },
+    "median_reduction_percent": 87.7,
+    "concurrent_calls": 16,
+    "timeout_and_reconnect": true,
+    "initial_call_ms": 698.316
+  },
+  "tencent": {
+    "fresh": {
+      "samples": 15,
+      "p50_ms": 700.432,
+      "p95_ms": 815.925,
+      "p99_ms": 815.925
+    },
+    "reused": {
+      "samples": 15,
+      "p50_ms": 138.224,
+      "p95_ms": 222.947,
+      "p99_ms": 222.947
+    },
+    "median_reduction_percent": 80.3,
+    "concurrent_calls": 16,
+    "timeout_and_reconnect": true,
+    "initial_call_ms": 731.639
+  }
+}

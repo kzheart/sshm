@@ -1,0 +1,13 @@
+{
+  "calls": 1000,
+  "connections_after": 0,
+  "fd_after": 6,
+  "fd_before": 6,
+  "goroutines_after": 3,
+  "goroutines_before": 3,
+  "heap_after": 650296,
+  "heap_before": 376512,
+  "seconds": 0.148729542,
+  "transports": 1,
+  "workers": 16
+}

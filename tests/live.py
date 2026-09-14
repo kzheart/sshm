@@ -114,7 +114,7 @@ class Target:
 
     def performance(self):
         methods={
-         'go':lambda cmd:self.argv(cmd,'--max-output','0'),
+         'go':lambda cmd:self.argv(cmd,'--max-output','0','--fresh'),
          'openssh_fresh':lambda cmd:['/usr/bin/ssh','-F',str(self.native_config),'-T','-o','BatchMode=no','-o','ControlMaster=no','-o','ControlPath=none',self.alias,cmd],
         }
         samples={k:[] for k in methods}

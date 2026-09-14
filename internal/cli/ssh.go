@@ -213,34 +213,54 @@ func localFailure(ctx context.Context, out io.Writer, err error, started bool) i
 			kind = "已取消"
 		}
 	}
-	fmt.Fprintf(out, "sshm: %s：%v。%s\n", kind, err, state)
+	// A blocked stderr consumer must not prevent an already cancelled CLI from
+	// returning. Give local diagnostics a small independent write budget.
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelWrite()
+	fmt.Fprintf(contextOutput(writeCtx, out), "sshm: %s：%v。%s\n", kind, err, state)
 	return code
 }
 
 func execute(ctx context.Context, o execOptions, input *os.File, stdout, stderr io.Writer) int {
+	return executeWithPool(ctx, o, input, stdout, stderr, nil)
+}
+
+func executeWithPool(ctx context.Context, o execOptions, input *os.File, stdout, stderr io.Writer, pool *connectionPool) int {
 	started := time.Now()
 	cfg, err := loadConfig(o.config)
 	if err != nil {
 		return localFailure(ctx, stderr, err, false)
 	}
-	b, err := connect(ctx, cfg, o.host)
+	var b *connection
+	var release func(bool)
+	reused := false
+	if pool == nil {
+		b, err = connect(ctx, cfg, o.host)
+		if err == nil {
+			release = func(bool) { b.Close() }
+		}
+	} else {
+		b, release, reused, err = pool.acquire(ctx, cfg, o.host, o.config)
+	}
 	if err != nil {
 		return localFailure(ctx, stderr, err, false)
 	}
-	defer b.Close()
-	stop := context.AfterFunc(ctx, func() { b.Close() })
-	defer stop()
+	defer func() { release(ctx.Err() != nil) }()
+	stopLease := context.AfterFunc(ctx, func() { release(true) })
+	defer stopLease()
 	connected := time.Now()
 	if o.debug {
-		fmt.Fprintf(stderr, "sshm: connect_ms=%.3f\n", float64(connected.Sub(started).Microseconds())/1000)
+		fmt.Fprintf(stderr, "sshm: connect_ms=%.3f reused=%t\n", float64(connected.Sub(started).Microseconds())/1000, reused)
 	}
 	s, err := b.client.NewSession()
 	if err != nil {
 		return localFailure(ctx, stderr, errors.New("无法建立命令通道"), false)
 	}
 	defer s.Close()
-	out := &limitedWriter{out: contextOutput(ctx, stdout), limit: o.maxOutput, abort: func() { b.Close() }}
-	diag := &limitedWriter{out: contextOutput(ctx, stderr), limit: o.maxOutput, abort: func() { b.Close() }}
+	stopSession := context.AfterFunc(ctx, func() { s.Close() })
+	defer stopSession()
+	out := &limitedWriter{out: contextOutput(ctx, stdout), limit: o.maxOutput, abort: func() { release(true); s.Close() }}
+	diag := &limitedWriter{out: contextOutput(ctx, stderr), limit: o.maxOutput, abort: func() { release(true); s.Close() }}
 	s.Stdout = out
 	s.Stderr = diag
 	in, err := s.StdinPipe()
@@ -262,7 +282,7 @@ func execute(ctx context.Context, o execOptions, input *os.File, stdout, stderr 
 	}()
 	err = s.Wait()
 	cancelInput()
-	b.Close()
+	s.Close()
 	<-done
 	if o.debug {
 		fmt.Fprintf(stderr, "sshm: command_ms=%.3f total_ms=%.3f\n", float64(time.Since(connected).Microseconds())/1000, float64(time.Since(started).Microseconds())/1000)

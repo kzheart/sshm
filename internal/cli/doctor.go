@@ -24,7 +24,7 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer,
 	if err != nil {
 		return localFailure(ctx, stderr, err, false)
 	}
-	fmt.Fprintf(stdout, "sshm %s\nSSH 实现：golang.org/x/crypto/ssh（内置，无外部 SSH 程序）\n配置：%s\n服务器：%d（未测试连接）\n生命周期：调用结束关闭，无后台进程或跨调用连接池\n", version, p, len(cfg.Servers))
+	fmt.Fprintf(stdout, "sshm %s\nSSH 实现：golang.org/x/crypto/ssh（内置，无外部 SSH 程序）\n配置：%s\n服务器：%d（未测试连接）\n生命周期：exec 自动复用；连接空闲 60 秒关闭，服务空闲自动退出；--fresh 使用独立连接\n", version, p, len(cfg.Servers))
 	if _, err := readKnownHosts(cfg.KnownHosts); err != nil {
 		fmt.Fprintln(stdout, "known_hosts：无法读取或格式无效")
 		return 1

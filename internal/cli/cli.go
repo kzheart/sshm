@@ -156,6 +156,7 @@ type execOptions struct {
 	timeout                      time.Duration
 	maxOutput                    int64
 	debug                        bool
+	fresh                        bool
 }
 
 func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.Writer) int {
@@ -167,6 +168,7 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 	f.DurationVar(&o.timeout, "timeout", 2*time.Minute, "本地总等待期限，包含配置解析和连接；0 表示无限")
 	f.Int64Var(&o.maxOutput, "max-output", 65536, "每个输出流最多显示的字节数；0 完整流式输出，可重定向到文件")
 	f.BoolVar(&o.debug, "debug", false, "将连接与命令耗时写入 stderr（不打印凭据）")
+	f.BoolVar(&o.fresh, "fresh", false, "使用独立新连接，结束立即关闭；跳过自动连接复用")
 	if err := parse(f, args); err != nil {
 		return parseError(err, stderr)
 	}
@@ -203,6 +205,13 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, o.timeout)
 		defer cancel()
+	}
+	if ctx.Value(brokerEnabled{}) != nil && !o.fresh {
+		if out, ok := stdout.(*os.File); ok {
+			if diag, ok := stderr.(*os.File); ok {
+				return brokerExecute(ctx, o, input, out, diag)
+			}
+		}
 	}
 	return execute(ctx, o, input, stdout, stderr)
 }

@@ -34,11 +34,11 @@ def measure(argv, env=None, timeout=30):
 
 def local(report):
     with Fixture() as f:
-        runtime=f.root/'runtime';runtime.mkdir(mode=0o700)
+        runtime=f.root/'runtime';runtime.mkdir(mode=0o700,exist_ok=True)
         env=dict(os.environ,SSHM_RUNTIME_DIR=str(runtime))
         old=ROOT/'bin/sshm-openssh-0.1.1'
         methods={
-          'go':lambda cmd:f.argv(cmd),
+          'go':lambda cmd:f.argv(cmd)+['--fresh'],
           'openssh_fresh':lambda cmd:['/usr/bin/ssh','-F',str(f.ssh_config),'-T','-o','BatchMode=yes','-o','ControlMaster=no','-o','ControlPath=none','fixture',cmd],
         }
         if old.exists():
