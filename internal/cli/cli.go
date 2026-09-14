@@ -1,4 +1,4 @@
-// Package cli implements a small, text-first adapter around system OpenSSH.
+// Package cli implements a standalone, text-first SSH client.
 package cli
 
 import (
@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -24,12 +23,14 @@ const help = `sshm — 面向 Agent 的精简 SSH 工具
   sshm doctor [-F 配置文件]
 
 命令：
-  hosts   列出 SSH 配置中明确的候选别名，不连接服务器
+  hosts   列出 TOML 中的服务器别名，不连接服务器
   exec    非交互执行；保留原始 stdout、stderr 和远端退出码
-  doctor  本地诊断；不建立远端连接或清理其他进程
+  shell   内置 SSH 交互终端；由宿主保持进程并连续读写
+  copy    内置 SFTP 单文件上传或下载
+  doctor  本地诊断；不建立远端连接
 
 使用 sshm <命令> --help 查看选项。--version 查看版本。
-交互终端直接使用 ssh；传输使用 scp/sftp，目录同步按需使用 rsync。
+默认配置 ~/.ssh/sshm.toml。无需外部 ssh、scp 或认证辅助程序。
 `
 
 // Run is also the integration seam: tests supply isolated config and runtime dirs.
@@ -47,6 +48,10 @@ func Run(ctx context.Context, args []string, stdin *os.File, stdout, stderr io.W
 		return hostsCommand(args[1:], stdout, stderr)
 	case "exec":
 		return execCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "shell":
+		return shellCommand(ctx, args[1:], stdin, stdout, stderr)
+	case "copy":
+		return copyCommand(ctx, args[1:], stdout, stderr)
 	case "doctor":
 		return doctorCommand(ctx, args[1:], stdout, stderr, version)
 	default:
@@ -67,7 +72,7 @@ func flags(name, usage string, out io.Writer) *flag.FlagSet {
 
 func configFlag(f *flag.FlagSet) *string {
 	var config string
-	f.StringVar(&config, "config", "", "SSH 配置文件（与 ssh -F 相同，默认沿用用户及系统配置）")
+	f.StringVar(&config, "config", "", "TOML 配置文件（默认 ~/.ssh/sshm.toml）")
 	f.StringVar(&config, "F", "", "--config 的简写")
 	return &config
 }
@@ -118,7 +123,7 @@ func parseError(err error, out io.Writer) int {
 
 func configPath(p string) (string, error) {
 	if p == "" {
-		return "", nil
+		p = "~/.ssh/sshm.toml"
 	}
 	if strings.HasPrefix(p, "~/") {
 		h, err := os.UserHomeDir()
@@ -148,8 +153,7 @@ func validHost(host string) bool {
 
 type execOptions struct {
 	config, host, command, input string
-	askpass                      string
-	timeout, persist             time.Duration
+	timeout                      time.Duration
 	maxOutput                    int64
 	debug                        bool
 }
@@ -160,18 +164,16 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 	o := execOptions{}
 	f.StringVar(&o.command, "command", "", "必填：远端命令字符串；调用端应正确引用本地 shell 参数")
 	f.StringVar(&o.input, "stdin", "", "读取指定文件作为 stdin；- 表示继承调用端 stdin")
-	f.StringVar(&o.askpass, "askpass", "", "显式使用 OpenSSH 认证辅助程序（返回密码或密钥口令）；不占用远端 stdin")
 	f.DurationVar(&o.timeout, "timeout", 2*time.Minute, "本地总等待期限，包含配置解析和连接；0 表示无限")
-	f.DurationVar(&o.persist, "persist", time.Minute, "OpenSSH 控制连接空闲期限；0 禁用复用（不是永久保持）")
 	f.Int64Var(&o.maxOutput, "max-output", 65536, "每个输出流最多显示的字节数；0 完整流式输出，可重定向到文件")
-	f.BoolVar(&o.debug, "debug", false, "将 OpenSSH 调试信息写入 stderr")
+	f.BoolVar(&o.debug, "debug", false, "将连接与命令耗时写入 stderr（不打印凭据）")
 	if err := parse(f, args); err != nil {
 		return parseError(err, stderr)
 	}
 	if f.NArg() != 1 || !validHost(f.Arg(0)) || strings.TrimSpace(o.command) == "" || strings.ContainsRune(o.command, 0) {
 		return parseError(errors.New("需要一个明确主机和非空 --command；使用 sshm exec --help"), stderr)
 	}
-	if o.timeout < 0 || o.persist < 0 || o.maxOutput < 0 {
+	if o.timeout < 0 || o.maxOutput < 0 {
 		return parseError(errors.New("期限和输出上限不能为负数"), stderr)
 	}
 	var err error
@@ -180,21 +182,6 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 		return parseError(err, stderr)
 	}
 	o.host = f.Arg(0)
-	if o.askpass != "" {
-		o.askpass, err = exec.LookPath(o.askpass)
-		if err != nil {
-			return parseError(fmt.Errorf("认证辅助程序不可执行：%w", err), stderr)
-		}
-		o.askpass, err = filepath.Abs(o.askpass)
-		if err != nil {
-			return parseError(err, stderr)
-		}
-	}
-	ssh, err := exec.LookPath("ssh")
-	if err != nil {
-		fmt.Fprintf(stderr, "sshm: 本地错误：找不到 OpenSSH 客户端：%v\n", err)
-		return 125
-	}
 	var input *os.File
 	if o.input == "-" {
 		input = stdin
@@ -217,5 +204,5 @@ func execCommand(ctx context.Context, args []string, stdin *os.File, stdout, std
 		ctx, cancel = context.WithTimeout(ctx, o.timeout)
 		defer cancel()
 	}
-	return execute(ctx, ssh, o, input, stdout, stderr)
+	return execute(ctx, o, input, stdout, stderr)
 }

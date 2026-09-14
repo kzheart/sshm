@@ -1,0 +1,124 @@
+{
+  "context": "macOS client \u2192 isolated Linux sshd, loopback-published Docker port",
+  "latency": {
+    "go": {
+      "samples": 30,
+      "p50_ms": 50.262,
+      "p95_ms": 62.421,
+      "p99_ms": 64.896
+    },
+    "openssh_fresh": {
+      "samples": 30,
+      "p50_ms": 49.235,
+      "p95_ms": 68.229,
+      "p99_ms": 70.399
+    },
+    "old_cli_fresh": {
+      "samples": 30,
+      "p50_ms": 65.443,
+      "p95_ms": 88.594,
+      "p99_ms": 99.394
+    },
+    "old_cli_reused": {
+      "samples": 30,
+      "p50_ms": 35.203,
+      "p95_ms": 57.831,
+      "p99_ms": 67.894
+    }
+  },
+  "throughput": {
+    "go_1048576": {
+      "samples": 3,
+      "p50_ms": 44.735,
+      "p95_ms": 45.495,
+      "p99_ms": 45.495,
+      "end_to_end_mib_s": 22.35
+    },
+    "openssh_fresh_1048576": {
+      "samples": 3,
+      "p50_ms": 71.47,
+      "p95_ms": 82.582,
+      "p99_ms": 82.582,
+      "end_to_end_mib_s": 13.99
+    },
+    "go_33554432": {
+      "samples": 3,
+      "p50_ms": 73.068,
+      "p95_ms": 85.84,
+      "p99_ms": 85.84,
+      "end_to_end_mib_s": 437.95
+    },
+    "openssh_fresh_33554432": {
+      "samples": 3,
+      "p50_ms": 96.855,
+      "p95_ms": 98.383,
+      "p99_ms": 98.383,
+      "end_to_end_mib_s": 330.39
+    }
+  },
+  "concurrency": {
+    "1": {
+      "samples": 64,
+      "p50_ms": 44.282,
+      "p95_ms": 60.416,
+      "p99_ms": 68.627,
+      "calls": 64,
+      "seconds": 2.879,
+      "calls_per_second": 22.23,
+      "failures": 0
+    },
+    "4": {
+      "samples": 64,
+      "p50_ms": 34.96,
+      "p95_ms": 40.714,
+      "p99_ms": 54.442,
+      "calls": 64,
+      "seconds": 0.589,
+      "calls_per_second": 108.64,
+      "failures": 0
+    },
+    "16": {
+      "samples": 64,
+      "p50_ms": 46.555,
+      "p95_ms": 61.858,
+      "p99_ms": 70.146,
+      "calls": 64,
+      "seconds": 0.215,
+      "calls_per_second": 297.2,
+      "failures": 0
+    },
+    "32": {
+      "samples": 64,
+      "p50_ms": 57.203,
+      "p95_ms": 72.4,
+      "p99_ms": 80.825,
+      "calls": 64,
+      "seconds": 0.206,
+      "calls_per_second": 310.41,
+      "failures": 0
+    }
+  },
+  "batching": {
+    "20_separate_calls_ms": 713.479,
+    "20_steps_one_call_ms": 49.087
+  },
+  "rss": {
+    "go": {
+      "source": "macOS time -l maximum resident set size",
+      "bytes": 18432000,
+      "payload_bytes": 67108864
+    },
+    "openssh_fresh": {
+      "source": "macOS time -l maximum resident set size",
+      "bytes": 4816896,
+      "payload_bytes": 67108864
+    }
+  },
+  "timeout_stress": {
+    "samples": 100,
+    "p50_ms": 124.018,
+    "p95_ms": 139.343,
+    "p99_ms": 147.678,
+    "expected_124": 100
+  }
+}

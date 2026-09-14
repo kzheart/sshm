@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Real OpenSSH integration tests against an ephemeral, loopback-only container.
-
-Requires Docker, Go, Python 3, ssh and ssh-keygen. No developer SSH config,
-credentials or remote servers are used. All test connections use pinned keys.
+"""Standalone client vs an isolated real OpenSSH server; no user credentials.
+OpenSSH CLI is used only to create fixture keys and as a measured baseline.
 """
 import concurrent.futures
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
-import re
 import select
-import shlex
 import shutil
+import signal
 import socket
+import struct
 import subprocess
 import tempfile
 import termios
@@ -22,417 +21,300 @@ import unittest
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "bin/sshm"
-IMAGE = os.environ.get("SSHM_TEST_IMAGE", "sshm-test-server:local")
+BINARY = ROOT / 'bin/sshm'
+IMAGE = os.environ.get('SSHM_TEST_IMAGE', 'sshm-test-server:local')
 
 
-def checked(args, **kwargs):
-    return subprocess.run(args, check=True, capture_output=True, **kwargs)
+def checked(args, **kw):
+    return subprocess.run(args, check=True, capture_output=True, timeout=60, **kw)
 
 
-def ssh_quote(value):
-    return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"') + '"'
+def capture(args, input=None, timeout=15, env=None):
+    p = subprocess.Popen(args, stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        out, err = p.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.terminate()
+        try:
+            p.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            p.kill(); p.communicate()
+        raise
+    return subprocess.CompletedProcess(args, p.returncode, out, err)
 
 
-class SSHIntegration(unittest.TestCase):
+class Fixture:
+    def __enter__(self):
+        self.root = Path(tempfile.mkdtemp(prefix='sshm-v2-', dir='/tmp'))
+        self.container = 'sshm-v2-' + uuid.uuid4().hex[:10]
+        self.password = uuid.uuid4().hex
+        try:
+            for key in ('client', 'host'):
+                checked(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.root/key)])
+            arch = checked(['docker', 'image', 'inspect', '--format', '{{.Architecture}}', IMAGE], text=True).stdout.strip()
+            self.linux = ROOT/'bin'/f'sshm-linux-{arch}'
+            checked(['go', 'build', '-trimpath', '-o', str(self.linux), '.'], cwd=ROOT,
+                    env=dict(os.environ, GOOS='linux', GOARCH=arch, CGO_ENABLED='0'))
+            checked(['docker', 'run', '-d', '--name', self.container, '-p', '127.0.0.1::2222',
+                     '-v', f'{self.root}:/fixture:ro', '-v', f'{self.linux}:/usr/local/bin/sshm:ro',
+                     '-v', f'{self.root/"client.pub"}:/etc/ssh/sshm_test_authorized_keys:ro',
+                     '-v', f'{self.root/"host"}:/etc/ssh/sshm_test_hostkey:ro', IMAGE])
+            self.port = int(checked(['docker', 'port', self.container, '2222/tcp'], text=True).stdout.strip().rsplit(':', 1)[1])
+            deadline = time.monotonic()+15
+            while True:
+                try:
+                    with socket.create_connection(('127.0.0.1', self.port), timeout=1) as s:
+                        if s.recv(100).startswith(b'SSH-'): break
+                except OSError: pass
+                if time.monotonic()>deadline: raise RuntimeError('fixture sshd did not start')
+                time.sleep(.1)
+            checked(['docker', 'exec', self.container, 'useradd', '-m', '-s', '/bin/sh', 'passwordtester'])
+            checked(['docker', 'exec', '-i', self.container, 'chpasswd'], input=f'passwordtester:{self.password}\n'.encode())
+            key = ' '.join((self.root/'host.pub').read_text().split()[:2])
+            self.known = self.root/'known_hosts'
+            self.known.write_text(f'[127.0.0.1]:{self.port} {key}\n[127.0.0.1]:2222 {key}\n')
+            self.config = self.root/'servers.toml'
+            self.config.write_text(f'''known_hosts = {json.dumps(str(self.known))}
+[ssh_servers.fixture]
+host = "127.0.0.1"
+port = {self.port}
+user = "tester"
+key_path = {json.dumps(str(self.root/'client'))}
+[ssh_servers.password]
+host = "127.0.0.1"
+port = {self.port}
+user = "passwordtester"
+password = "{self.password}"
+[ssh_servers.jump]
+host = "127.0.0.1"
+port = 2222
+user = "passwordtester"
+password = "{self.password}"
+proxy_jump = "fixture"
+''')
+            self.config.chmod(0o600)
+            self.ssh_config = self.root/'openssh.conf'
+            self.ssh_config.write_text(f'''Host fixture
+ HostName 127.0.0.1
+ Port {self.port}
+ User tester
+ IdentityFile "{self.root/'client'}"
+ IdentitiesOnly yes
+ UserKnownHostsFile "{self.known}"
+ GlobalKnownHostsFile /dev/null
+ StrictHostKeyChecking yes
+''')
+            self.linux_config = self.root/'linux.toml'
+            self.linux_config.write_text(self.config.read_text().replace(str(self.root), '/tmp/sshm-fixture').replace(f'port = {self.port}', 'port = 2222'))
+            self.linux_config.chmod(0o600)
+            checked(['docker', 'exec', self.container, 'sh', '-c', 'mkdir -m 700 /tmp/sshm-fixture; cp /fixture/client /fixture/known_hosts /fixture/linux.toml /tmp/sshm-fixture/; chmod 600 /tmp/sshm-fixture/*'])
+            return self
+        except BaseException:
+            self.__exit__(None,None,None); raise
+
+    def __exit__(self, *args):
+        subprocess.run(['docker', 'rm', '-f', self.container], capture_output=True, timeout=20)
+        shutil.rmtree(self.root)
+
+    def argv(self, cmd, host='fixture', *extra):
+        return [str(BINARY), 'exec', host, '-F', str(self.config), '--command', cmd, *extra]
+
+    def run(self, cmd, host='fixture', *extra, **kw):
+        return capture(self.argv(cmd, host, *extra), **kw)
+
+    def copy(self, *args):
+        return capture([str(BINARY), 'copy', 'fixture', '-F', str(self.config), *args])
+
+
+def terminal(fixture, command='sh', host='fixture'):
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 31, 101, 0, 0))
+    def setup():
+        os.setsid(); fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    p = subprocess.Popen([str(BINARY), 'shell', host, '-F', str(fixture.config), '--command', command, '--timeout', '10s'],
+                         stdin=slave, stdout=slave, stderr=slave, preexec_fn=setup)
+    os.close(slave); output = bytearray()
+    def until(marker):
+        deadline = time.monotonic()+8
+        while marker not in output:
+            if time.monotonic()>deadline: raise AssertionError('terminal marker deadline')
+            if select.select([master], [], [], .1)[0]:
+                try: data=os.read(master,65536)
+                except OSError: break
+                if not data: break
+                output.extend(data)
+        assert marker in output, 'missing terminal marker'
+    try:
+        os.write(master, b"printf 'READY_%s\\n' ok\n")
+        until(b'READY_ok')
+        os.write(master, b"cd /tmp; stty size; printf 'ASK_%s\\n' input; read answer; printf 'VALUE_%s\\n' \"$answer\"; pwd\n")
+        until(b'ASK_input'); os.write(master, b'hello-agent\n'); until(b'VALUE_hello-agent')
+        os.write(master, b'exit 17\n'); p.wait(timeout=5)
+        assert p.returncode==17 and b'31 101' in output and b'/tmp' in output
+        return bytes(output)
+    finally:
+        if p.poll() is None: p.terminate(); p.wait(timeout=5)
+        os.close(master)
+
+
+class Integration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        checked(["go", "build", "-trimpath", "-o", str(BINARY), "."], cwd=ROOT)
-        checked(["docker", "image", "inspect", IMAGE])
-        architecture = checked(["docker", "image", "inspect", "--format", "{{.Architecture}}", IMAGE], text=True).stdout.strip()
-        cls.linux_binary = ROOT / "bin" / f"sshm-linux-{architecture}"
-        checked(["go", "build", "-trimpath", "-o", str(cls.linux_binary), "."], cwd=ROOT,
-                env=dict(os.environ, GOOS="linux", GOARCH=architecture, CGO_ENABLED="0"))
-        cls.fixture = Path(tempfile.mkdtemp(prefix="sshm-fixture-", dir="/tmp"))
-        cls.container = "sshm-test-" + uuid.uuid4().hex[:10]
-        cls.addClassCleanup(shutil.rmtree, cls.fixture, True)
-        cls.addClassCleanup(lambda: subprocess.run(
-            ["docker", "rm", "-f", cls.container], capture_output=True, timeout=20))
-        for key in ("client", "host"):
-            checked(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(cls.fixture / key)])
-        checked([
-            "docker", "run", "-d", "--name", cls.container,
-            "-p", "127.0.0.1::2222",
-            "-v", f"{cls.linux_binary}:/usr/local/bin/sshm:ro",
-            "-v", f"{cls.fixture}:/fixture:ro",
-            "-v", f"{cls.fixture / 'client.pub'}:/etc/ssh/sshm_test_authorized_keys:ro",
-            "-v", f"{cls.fixture / 'host'}:/etc/ssh/sshm_test_hostkey:ro", IMAGE,
-        ])
-        binding = checked(["docker", "port", cls.container, "2222/tcp"], text=True).stdout.strip()
-        cls.port = int(binding.rsplit(":", 1)[1])
-        deadline = time.monotonic() + 15
-        while True:
-            try:
-                with socket.create_connection(("127.0.0.1", cls.port), timeout=1) as s:
-                    if s.recv(100).startswith(b"SSH-"):
-                        break
-            except OSError:
-                pass
-            if time.monotonic() > deadline:
-                logs = checked(["docker", "logs", cls.container], text=True)
-                raise RuntimeError(logs.stdout + logs.stderr)
-            time.sleep(0.1)
-        public = (cls.fixture / "host.pub").read_text().split()
-        known = cls.fixture / "known_hosts"
-        known.write_text(f"[127.0.0.1]:{cls.port} {public[0]} {public[1]}\n")
-        cls.config = cls.fixture / "ssh config"
-        cls.config.write_text(
-            "Host fixture\n"
-            " HostName 127.0.0.1\n"
-            f" Port {cls.port}\n"
-            " User tester\n"
-            f" IdentityFile {ssh_quote(cls.fixture / 'client')}\n"
-            " IdentitiesOnly yes\n"
-            f" UserKnownHostsFile {ssh_quote(known)}\n"
-            " GlobalKnownHostsFile /dev/null\n"
-            " StrictHostKeyChecking yes\n"
-        )
-        (cls.fixture / "linux-known-hosts").write_text(f"[127.0.0.1]:2222 {public[0]} {public[1]}\n")
-        (cls.fixture / "linux-config").write_text(
-            "Host fixture\n HostName 127.0.0.1\n Port 2222\n User tester\n"
-            " IdentityFile /fixture/client\n IdentitiesOnly yes\n"
-            " UserKnownHostsFile /fixture/linux-known-hosts\n"
-            " GlobalKnownHostsFile /dev/null\n StrictHostKeyChecking yes\n")
-        checked(["docker", "exec", cls.container, "useradd", "-m", "-s", "/bin/sh", "passwordtester"])
-        cls.test_password = uuid.uuid4().hex + "-test-secret"
-        checked(["docker", "exec", "-i", cls.container, "chpasswd"],
-                input=f"passwordtester:{cls.test_password}\n".encode())
-        cls.password_config = cls.fixture / "password-config"
-        cls.password_config.write_text(cls.config.read_text().replace(" User tester", " User passwordtester") +
-                                       " PreferredAuthentications password\n PubkeyAuthentication no\n")
+        cls.context = Fixture(); cls.f = cls.context.__enter__()
+        cls.addClassCleanup(cls.context.__exit__, None, None, None)
 
-    def setUp(self):
-        self.runtime = Path(tempfile.mkdtemp(prefix="sshm-it-", dir="/tmp"))
-        self.env = dict(os.environ, SSHM_RUNTIME_DIR=str(self.runtime))
-        self.children = []
+    def assert_ok(self, p, out=None, code=0):
+        self.assertEqual(p.returncode,code,p.stderr.decode(errors='replace'))
+        if out is not None:self.assertEqual(p.stdout,out)
+        self.assertEqual(p.stderr,b'')
 
-    def tearDown(self):
-        for child in self.children:
-            if child.poll() is None:
-                child.terminate()
-                try:
-                    child.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    child.communicate(timeout=3)
-        # Only close masters belonging to this test's private directory.
-        for path in self.sockets():
-            subprocess.run(["ssh", "-F", "/dev/null", "-S", str(path), "-O", "exit", "unused"],
-                           capture_output=True, timeout=3)
-        shutil.rmtree(self.runtime)
+    def test_01_password_key_and_jump(self):
+        for host in ('fixture','password','jump'):
+            self.assert_ok(self.f.run("printf ok",host),b'ok')
 
-    def sockets(self):
-        return [p for p in self.runtime.glob("c-*") if p.is_socket()]
+    def test_02_raw_streams_and_exit_status(self):
+        for code in (0,1,2,17,124,125,130,255):
+            p=self.f.run(f"printf out; printf err >&2; exit {code}")
+            self.assertEqual((p.returncode,p.stdout,p.stderr),(code,b'out',b'err'))
 
-    def argv(self, command, *options):
-        return [str(BINARY), "exec", "fixture", "-F", str(self.config), "--command", command, *options]
+    def test_03_binary_stdin_and_default_eof(self):
+        data=bytes(range(256))*4096
+        self.assert_ok(self.f.run('cat','fixture','--stdin','-','--max-output','0',input=data),data)
+        self.assert_ok(self.f.run('cat'),b'')
 
-    def run_ssh(self, command, *options, input=None):
-        return subprocess.run(self.argv(command, *options), input=input, capture_output=True,
-                              env=self.env, timeout=15)
+    def test_04_unicode_script_and_state(self):
+        self.assert_ok(self.f.run('cd /tmp; pwd'), b'/tmp\n')
+        # Use single quotes for literals; the CLI must not reinterpret the script.
+        data="printf '%s\\n' '中文 $HOME `literal`'\n".encode()
+        self.assert_ok(self.f.run('sh -s','fixture','--stdin','-',input=data),'中文 $HOME `literal`\n'.encode())
+        self.assert_ok(self.f.run('pwd'),b'/home/tester\n')
 
-    def start(self, command, *options):
-        p = subprocess.Popen(self.argv(command, *options), stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env)
-        self.children.append(p)
-        return p
+    def test_05_large_output_drains(self):
+        p=self.f.run('head -c 20971520 /dev/zero; printf diag >&2','fixture','--max-output','1024')
+        self.assertEqual(p.returncode,0);self.assertEqual(len(p.stdout),1024);self.assertIn(b'20970496',p.stderr)
+        p=self.f.run('head -c 20971520 /dev/zero','fixture','--max-output','0')
+        self.assert_ok(p,b'\0'*20971520)
 
-    def wait_master(self):
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            paths = self.sockets()
-            if paths:
-                return paths[0]
-            time.sleep(0.02)
-        self.fail("no control socket published")
+    def test_06_timeout(self):
+        start=time.monotonic();p=self.f.run('sleep 2','fixture','--timeout','150ms')
+        self.assertEqual(p.returncode,124);self.assertLess(time.monotonic()-start,1.5)
 
-    def master_pid(self, path):
-        p = checked(["ssh", "-F", "/dev/null", "-S", str(path), "-O", "check", "unused"])
-        return int(re.search(rb"pid=(\d+)", p.stderr).group(1))
+    def test_07_cancel_open_stdin(self):
+        p=subprocess.Popen(self.f.argv('sleep 2','fixture','--stdin','-'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        time.sleep(.3);p.terminate();p.wait(timeout=3);self.assertEqual(p.returncode,130)
+        p.stdin.close();p.stdout.close();p.stderr.close()
 
-    def accepted_connections(self):
-        logs = checked(["docker", "logs", self.container])
-        return (logs.stdout + logs.stderr).count(b"Accepted publickey for tester")
+    def test_08_normal_exit_with_unclosed_stdin(self):
+        p=subprocess.Popen(self.f.argv('printf done','fixture','--stdin','-'),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        p.wait(timeout=3);self.assertEqual(p.returncode,0);self.assertEqual(p.stdout.read(),b'done')
+        p.stdin.close();p.stdout.close();p.stderr.close()
 
-    def test_01_raw_output_exit_codes_and_no_local_shell(self):
-        literal = "引号 ' \" $HOME `literal` $(touch /tmp/sshm-should-not-exist)"
-        p = self.run_ssh("printf '%s' " + shlex.quote(literal) + "; printf 'err' >&2; exit 17")
-        self.assertEqual(p.returncode, 17, p.stderr)
-        self.assertEqual(p.stdout.decode(), literal)
-        self.assertEqual(p.stderr, b"err")
-        self.assertEqual(self.run_ssh("exit 125").stderr, b"")
-        p = self.run_ssh("exit 255")
-        self.assertEqual(p.returncode, 255)
-        self.assertIn("无法确认", p.stderr.decode())
+    def test_09_concurrent_calls(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            results=list(pool.map(lambda i:self.f.run(f'printf {i}'),range(32)))
+        for i,p in enumerate(results):self.assert_ok(p,str(i).encode())
 
-    def test_02_stdin_eof_pipe_file_and_binary(self):
-        self.assertEqual(self.run_ssh("cat").stdout, b"")
-        content = "中文 stdin\n'\"$`".encode() + b"\x00\xff"
-        p = self.run_ssh("cat", "--stdin", "-", "--max-output", "0", input=content)
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, content, b""))
-        path = self.runtime / "input with spaces"
-        path.write_bytes(content)
-        self.assertEqual(self.run_ssh("cat", "--stdin", str(path)).stdout, content)
+    def test_10_sibling_survives_timeout(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            a=pool.submit(self.f.run,'sleep 2','fixture','--timeout','150ms')
+            b=pool.submit(self.f.run,'sleep .3; printf survived')
+            self.assertEqual(a.result().returncode,124);self.assert_ok(b.result(),b'survived')
 
-    def test_03_large_output_is_drained_not_buffered(self):
-        p = self.run_ssh("head -c 20000000 /dev/zero; printf 'finished' >&2", "--max-output", "4096")
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(len(p.stdout), 4096)
-        self.assertIn(b"finished", p.stderr)
-        self.assertIn("19995904".encode(), p.stderr)
-        with (self.runtime / "full-output").open("wb") as output:
-            p = subprocess.run(self.argv("head -c 2000000 /dev/zero", "--max-output", "0"),
-                               stdout=output, stderr=subprocess.PIPE, env=self.env, timeout=10)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual((self.runtime / "full-output").stat().st_size, 2000000)
+    def test_11_no_openssh_in_path(self):
+        env=dict(os.environ,PATH='/nonexistent')
+        self.assert_ok(self.f.run('printf standalone',env=env),b'standalone')
 
-    def test_04_concurrent_cold_calls_share_one_transport(self):
-        before = self.accepted_connections()
-        started = time.monotonic()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda _: self.run_ssh("sleep 0.4; printf done"), range(8)))
-        duration = time.monotonic() - started
-        for p in results:
-            self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"done", b""))
-        self.assertEqual(len(self.sockets()), 1)
-        self.assertEqual(self.accepted_connections() - before, 1)
-        self.assertLess(duration, 3.5, "commands were serialized")
-        print(f"\n  8 cold concurrent calls: {duration:.3f}s, one SSH transport", flush=True)
+    def test_12_copy_roundtrip_and_overwrite(self):
+        source=self.f.root/'中文 space.bin';dest=self.f.root/'download.bin';data=os.urandom(2<<20);source.write_bytes(data)
+        remote='/tmp/sshm-copy-'+uuid.uuid4().hex
+        try:
+            p=self.f.copy('--upload',str(source),'--remote',remote);self.assertEqual(p.returncode,0,p.stderr)
+            self.assertNotEqual(self.f.copy('--upload',str(source),'--remote',remote).returncode,0)
+            p=self.f.copy('--download',str(dest),'--remote',remote);self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(dest.read_bytes(),data)
+            self.assertNotEqual(self.f.copy('--download',str(dest),'--remote',remote).returncode,0)
+            source.write_bytes(b'new');self.assertEqual(self.f.copy('--upload',str(source),'--remote',remote,'--overwrite').returncode,0)
+            self.assertEqual(self.f.copy('--download',str(dest),'--remote',remote,'--overwrite').returncode,0);self.assertEqual(dest.read_bytes(),b'new')
+        finally:self.f.run('rm -f -- '+remote)
 
-    def test_05_reuse_and_idle_expiry(self):
-        p = self.run_ssh("printf first", "--persist", "2s")
-        self.assertEqual(p.returncode, 0, p.stderr)
-        path = self.wait_master()
-        pid = self.master_pid(path)
-        p = self.run_ssh("printf second", "--persist", "2s")
-        self.assertEqual(p.stdout, b"second")
-        self.assertEqual(self.master_pid(path), pid)
-        deadline = time.monotonic() + 8
-        while path.exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertFalse(path.exists(), "idle master/socket did not expire")
+    def test_13_interactive_terminal(self):terminal(self.f)
 
-    def test_06_active_command_outlives_idle_ttl(self):
-        p = self.run_ssh("sleep 2; printf still-running", "--persist", "1s")
-        self.assertEqual((p.returncode, p.stdout), (0, b"still-running"), p.stderr)
+    def test_14_linux_binary_password_jump_and_stdin(self):
+        for host in ('fixture','password','jump'):
+            p=capture(['docker','exec','-i',self.f.container,'/usr/local/bin/sshm','exec',host,'-F','/tmp/sshm-fixture/linux.toml','--command','cat','--stdin','-'],input=b'linux\x00\xff')
+            self.assert_ok(p,b'linux\x00\xff')
 
-    def test_07_timeout_is_explicit_and_does_not_break_sibling(self):
-        sibling = self.start("sleep 1.5; printf sibling-done")
-        self.wait_master()
-        p = self.run_ssh("sleep 10", "--timeout", "250ms")
-        self.assertEqual(p.returncode, 124, p.stderr)
-        self.assertIn("远端执行结果未知", p.stderr.decode())
-        out, err = sibling.communicate(timeout=5)
-        self.assertEqual((sibling.returncode, out, err), (0, b"sibling-done", b""))
+    def test_15_invalid_auth_config_and_host_key(self):
+        cfg=self.f.root/'invalid.toml';cfg.write_text(self.f.config.read_text().replace(self.f.password,'wrong-password'));cfg.chmod(0o600)
+        p=capture([str(BINARY),'exec','password','-F',str(cfg),'--command','true'])
+        self.assertEqual(p.returncode,125);self.assertNotIn(b'wrong-password',p.stderr)
+        cfg.write_text(self.f.config.read_text().replace(str(self.f.known),str(self.f.root/'empty-known')));(self.f.root/'empty-known').write_text('')
+        p=capture([str(BINARY),'exec','fixture','-F',str(cfg),'--command','true'])
+        self.assertEqual(p.returncode,125);self.assertIn(b'SHA256:',p.stderr)
 
-    def test_08_sigterm_reaps_foreground_ssh(self):
-        p = self.start("sleep 10", "--persist", "0")
-        time.sleep(0.35)
-        children = checked(["ps", "-axo", "pid,ppid"], text=True).stdout.splitlines()[1:]
-        ssh_children = [int(x.split()[0]) for x in children if x.split()[1] == str(p.pid)]
-        self.assertTrue(ssh_children, "did not observe running SSH child")
-        p.terminate()
-        _, err = p.communicate(timeout=3)
-        self.assertEqual(p.returncode, 130, err)
-        for child in ssh_children:
-            with self.assertRaises(ProcessLookupError):
-                os.kill(child, 0)
+    def test_16_closed_output_consumer(self):
+        p=subprocess.Popen(self.f.argv('head -c 20971520 /dev/zero','fixture','--max-output','0'),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        p.stdout.close();p.wait(timeout=5);self.assertEqual(p.returncode,125);p.stderr.close()
 
-    def test_09_no_reuse_and_configured_side_effects_disabled(self):
-        config = self.runtime / "overrides"
-        config.write_text(self.config.read_text() +
-                          " RemoteCommand sleep 20\n RequestTTY force\n SessionType none\n"
-                          " ForkAfterAuthentication yes\n LocalCommand touch /tmp/sshm-unwanted-local\n"
-                          " PermitLocalCommand yes\n LocalForward 127.0.0.1:1 localhost:1\n")
-        p = self.run_ssh("printf explicit", "-F", str(config), "--persist", "0")
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"explicit", b""))
-        self.assertEqual(self.sockets(), [])
+    def test_17_blocked_output_consumer(self):
+        p=subprocess.Popen(self.f.argv('head -c 20971520 /dev/zero','fixture','--max-output','0','--timeout','300ms'),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        p.wait(timeout=3);self.assertEqual(p.returncode,124);p.stdout.close();p.stderr.close()
 
-    def test_10_doctor_is_local_and_reports_own_master(self):
-        self.assertEqual(self.run_ssh("true").returncode, 0)
-        before = self.accepted_connections()
-        p = subprocess.run([str(BINARY), "doctor", "-F", str(self.config)], capture_output=True,
-                           env=self.env, timeout=5)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("控制 socket 数: 1", p.stdout.decode())
-        self.assertEqual(self.accepted_connections(), before)
+    def test_18_encrypted_private_key(self):
+        key=self.f.root/'encrypted';shutil.copyfile(self.f.root/'client',key);key.chmod(0o600)
+        # Synthetic fixture passphrase, no real credential enters command arguments.
+        checked(['ssh-keygen','-p','-P','','-N','fixture-only-passphrase','-f',str(key)])
+        cfg=self.f.root/'encrypted.toml';cfg.write_text(self.f.config.read_text().replace(str(self.f.root/'client'),str(key)).replace('[ssh_servers.password]','passphrase = "fixture-only-passphrase"\n[ssh_servers.password]'));cfg.chmod(0o600)
+        self.assert_ok(capture([str(BINARY),'exec','fixture','-F',str(cfg),'--command','printf encrypted']),b'encrypted')
 
-    def test_11_native_terminal_supports_multi_turn_input(self):
-        master, slave = pty.openpty()
+    def test_19_jump_timeout(self):
+        p=self.f.run('sleep 2','jump','--timeout','200ms');self.assertEqual(p.returncode,124)
 
-        def controlling_terminal():
-            os.setsid()
-            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+    def test_20_shell_cancel_restores_local_terminal(self):
+        master,slave=pty.openpty();before=termios.tcgetattr(slave)
+        p=subprocess.Popen([str(BINARY),'shell','fixture','-F',str(self.f.config),'--command','sleep 2'],stdin=slave,stdout=slave,stderr=slave)
+        try:
+            time.sleep(.3);p.terminate();p.wait(timeout=3)
+            self.assertEqual(p.returncode,130)
+            after=termios.tcgetattr(slave)
+            # Darwin may set PENDIN when tcsetattr reprocesses queued input;
+            # it is a transient kernel state, not a raw/canonical mode change.
+            before[3] &= ~getattr(termios,'PENDIN',0)
+            after[3] &= ~getattr(termios,'PENDIN',0)
+            self.assertEqual(after,before)
+        finally:
+            if p.poll() is None:p.kill();p.wait()
+            os.close(master);os.close(slave)
 
-        p = subprocess.Popen(["ssh", "-tt", "-F", str(self.config), "fixture"],
-                             stdin=slave, stdout=slave, stderr=slave, preexec_fn=controlling_terminal)
-        self.children.append(p)
-        os.close(slave)
-        self.addCleanup(os.close, master)
-        received = bytearray()
+    def test_21_cancel_sftp_mid_transfer(self):
+        source=self.f.root/'sparse-upload.bin'
+        with source.open('wb') as f:f.truncate(2<<30)
+        remote='/tmp/sshm-cancel-'+uuid.uuid4().hex
+        try:
+            p=capture([str(BINARY),'copy','fixture','-F',str(self.f.config),'--upload',str(source),'--remote',remote,'--timeout','1s'],timeout=5)
+            self.assertEqual(p.returncode,124,p.stderr)
+            size=int(checked(['docker','exec',self.f.container,'stat','-c','%s',remote]).stdout)
+            self.assertGreater(size,0);self.assertLess(size,2<<30)
+        finally:
+            checked(['docker','exec',self.f.container,'rm','-f','--',remote]);source.unlink()
 
-        def read_until(marker, timeout=5):
-            deadline = time.monotonic() + timeout
-            while marker not in received:
-                if time.monotonic() > deadline:
-                    self.fail(f"terminal did not produce {marker!r}: {received[-2000:]!r}")
-                if select.select([master], [], [], 0.1)[0]:
-                    data = os.read(master, 8192)
-                    if not data:
-                        self.fail("terminal closed early")
-                    received.extend(data)
+    def test_22_shell_owner_closes_input(self):
+        p=subprocess.Popen([str(BINARY),'shell','fixture','-F',str(self.f.config),'--command','sleep 5'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            time.sleep(.3);p.stdin.close();p.wait(timeout=3)
+            self.assertEqual(p.returncode,130)
+        finally:
+            if p.poll() is None:p.kill();p.wait()
+            p.stdout.close();p.stderr.close()
 
-        os.write(master, b"printf 'READY=%s\\n' yes\n")
-        read_until(b"READY=yes\r\n")
-        os.write(master, b"cd /tmp\npwd\n")
-        read_until(b"/tmp\r\n")
-        os.write(master, b"read -r answer; printf 'ANSWER=%s\\n' \"$answer\"\n")
-        time.sleep(0.1)
-        os.write(master, b"agent-reply\n")
-        read_until(b"ANSWER=agent-reply\r\n")
-        os.write(master, b"exit\n")
-        deadline = time.monotonic() + 5
-        while p.poll() is None and time.monotonic() < deadline:
-            if select.select([master], [], [], 0.1)[0]:
-                try:
-                    received.extend(os.read(master, 8192))
-                except OSError:
-                    break
-        self.assertEqual(p.wait(timeout=1), 0, received[-2000:])
-
-    def test_12_host_key_mismatch_fails_without_prompt(self):
-        wrong = self.runtime / "wrong-known-hosts"
-        key = (self.fixture / "client.pub").read_text().split()
-        wrong.write_text(f"[127.0.0.1]:{self.port} {key[0]} {key[1]}\n")
-        config = self.runtime / "wrong-config"
-        config.write_text(self.config.read_text().replace(
-            ssh_quote(self.fixture / "known_hosts"), ssh_quote(wrong)))
-        p = self.run_ssh("printf must-not-execute", "-F", str(config))
-        self.assertEqual(p.returncode, 255, p.stderr)
-        self.assertEqual(p.stdout, b"")
-        self.assertEqual(self.sockets(), [])
-
-    def test_13_proxyjump_uses_native_ssh_config(self):
-        public = (self.fixture / "host.pub").read_text().split()
-        known = self.runtime / "jump-known-hosts"
-        known.write_text(f"internal-fixture {public[0]} {public[1]}\n")
-        config = self.runtime / "jump-config"
-        config.write_text(self.config.read_text() +
-                          "Host via-jump\n HostName 127.0.0.1\n Port 2222\n User tester\n"
-                          f" IdentityFile {ssh_quote(self.fixture / 'client')}\n"
-                          " IdentitiesOnly yes\n ProxyJump fixture\n HostKeyAlias internal-fixture\n"
-                          f" UserKnownHostsFile {ssh_quote(known)}\n StrictHostKeyChecking yes\n")
-        p = subprocess.run([str(BINARY), "exec", "via-jump", "-F", str(config),
-                            "--command", "printf jumped"], capture_output=True, env=self.env, timeout=10)
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"jumped", b""))
-
-    def test_14_closed_output_pipe_cancels_foreground(self):
-        p = self.start("yes", "--persist", "0", "--max-output", "0")
-        self.assertTrue(p.stdout.read(10))
-        children = checked(["ps", "-axo", "pid,ppid"], text=True).stdout.splitlines()[1:]
-        ssh_children = [int(x.split()[0]) for x in children if x.split()[1] == str(p.pid)]
-        p.stdout.close()
-        p.stdout = None
-        _, err = p.communicate(timeout=3)
-        self.assertEqual(p.returncode, 125, err)
-        self.assertIn("输出写入失败", err.decode())
-        for child in ssh_children:
-            with self.assertRaises(ProcessLookupError):
-                os.kill(child, 0)
-
-    def test_15_large_stream_has_bounded_cli_memory(self):
-        p = self.start("i=0; while [ $i -lt 20 ]; do head -c 1000000 /dev/zero; sleep 0.05; i=$((i+1)); done",
-                       "--max-output", "1024")
-        peak_kib = 0
-        while p.poll() is None:
-            snapshot = subprocess.run(["ps", "-o", "rss=", "-p", str(p.pid)], capture_output=True, text=True)
-            if snapshot.stdout.strip():
-                peak_kib = max(peak_kib, int(snapshot.stdout.strip()))
-            time.sleep(0.02)
-        out, err = p.communicate(timeout=3)
-        self.assertEqual(p.returncode, 0, err)
-        self.assertEqual(len(out), 1024)
-        self.assertLess(peak_kib, 64 * 1024)
-        print(f"\n  CLI peak RSS while draining 20 MB: {peak_kib / 1024:.1f} MiB", flush=True)
-
-    def test_16_linux_binary_executes_and_reuses_connection(self):
-        base = ["docker", "exec", self.container, "sshm"]
-        for _ in range(2):
-            p = checked(base + ["exec", "fixture", "-F", "/fixture/linux-config", "--command",
-                                "printf linux-ok", "--persist", "2s"])
-            self.assertEqual((p.stdout, p.stderr), (b"linux-ok", b""))
-        p = checked(base + ["doctor", "-F", "/fixture/linux-config"])
-        self.assertIn("控制 socket 数: 1", p.stdout.decode())
-
-    def password_helper(self, text=None):
-        path = self.runtime / ("helper " + uuid.uuid4().hex[:8])
-        secret_file = self.runtime / (path.name + ".secret")
-        secret_file.write_text((text or self.test_password)+"\n")
-        secret_file.chmod(0o600)
-        path.write_text("#!/bin/sh\n[ \"$SSH_ASKPASS_PROMPT\" != confirm ] || exit 1\n"
-                        + "cat " + shlex.quote(str(secret_file)) + "\n")
-        path.chmod(0o700)
-        return path
-
-    def test_17_askpass_password_and_stdin_are_separate(self):
-        helper = self.password_helper()
-        data = b"remote stdin\x00\xff"
-        p = self.run_ssh("cat", "-F", str(self.password_config), "--askpass", str(helper), "--stdin", "-", input=data)
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, data, b""))
-        p = self.run_ssh("printf reused", "-F", str(self.password_config), "--askpass", str(helper))
-        self.assertEqual((p.returncode, p.stdout), (0, b"reused"), p.stderr)
-        self.assertEqual(len(self.sockets()), 1)
-        self.assertNotIn(self.test_password.encode(), p.stdout + p.stderr)
-
-    def test_18_askpass_is_explicit_and_helpers_do_not_share_auth(self):
-        good, bad = self.password_helper(), self.password_helper("wrong-fixture-password")
-        p = self.run_ssh("true", "-F", str(self.password_config))
-        self.assertEqual(p.returncode, 255, p.stderr)
-        p = self.run_ssh("true", "-F", str(self.password_config), "--askpass", str(good))
-        self.assertEqual(p.returncode, 0, p.stderr)
-        p = self.run_ssh("printf must-not-run", "-F", str(self.password_config), "--askpass", str(bad))
-        self.assertEqual(p.returncode, 255, p.stderr)
-        self.assertEqual(p.stdout, b"")
-
-    def test_19_askpass_hang_is_bounded_by_timeout(self):
-        helper = self.runtime / "slow-helper"
-        marker = self.runtime / "helper-started"
-        helper.write_text("#!/bin/sh\nprintf '%s' $$ > " + shlex.quote(str(marker)) + "\nsleep 30\n")
-        helper.chmod(0o700)
-        p = self.run_ssh("true", "-F", str(self.password_config), "--askpass", str(helper), "--timeout", "800ms")
-        self.assertEqual(p.returncode, 124, p.stderr)
-        self.assertTrue(marker.exists(), "authentication helper was never started")
-        self.assertIn("结果未知", p.stderr.decode())
-
-    def test_20_encrypted_private_key_uses_askpass(self):
-        helper = self.password_helper()
-        key = self.runtime / "encrypted-key"
-        env = dict(self.env, SSH_ASKPASS=str(helper), SSH_ASKPASS_REQUIRE="force")
-        checked(["ssh-keygen", "-q", "-t", "ed25519", "-f", str(key)],
-                stdin=subprocess.DEVNULL, env=env)
-        with (self.fixture / "client.pub").open("a") as auth:
-            auth.write(key.with_suffix(".pub").read_text())
-        config = self.runtime / "encrypted-key-config"
-        config.write_text(self.config.read_text().replace(ssh_quote(self.fixture / "client"), ssh_quote(key)) +
-                          " IdentityAgent none\n PreferredAuthentications publickey\n")
-        p = self.run_ssh("printf decrypted", "-F", str(config), "--askpass", str(helper))
-        self.assertEqual((p.returncode, p.stdout, p.stderr), (0, b"decrypted", b""))
-
-    def test_21_linux_password_helper_preserves_binary_stdin(self):
-        (self.fixture / "linux-password").write_text(self.test_password + "\n")
-        (self.fixture / "linux-password").chmod(0o600)
-        helper = self.fixture / "linux-askpass"
-        helper.write_text("#!/bin/sh\ncat /fixture/linux-password\n")
-        helper.chmod(0o700)
-        config = self.fixture / "linux-password-config"
-        config.write_text((self.fixture / "linux-config").read_text().replace(" User tester", " User passwordtester") +
-                          " PreferredAuthentications password\n PubkeyAuthentication no\n")
-        data = b"linux-password-stdin\x00\xff"
-        p = checked(["docker", "exec", "-i", self.container, "sshm", "exec", "fixture",
-                     "-F", "/fixture/linux-password-config", "--command", "cat", "--stdin", "-",
-                     "--askpass", "/fixture/linux-askpass"], input=data)
-        self.assertEqual((p.stdout, p.stderr), (data, b""))
+    def test_23_shell_output_consumer_closes(self):
+        p=subprocess.Popen([str(BINARY),'shell','fixture','-F',str(self.f.config),'--command','printf output; sleep 5'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            p.stdout.close();p.wait(timeout=3)
+            self.assertEqual(p.returncode,125)
+        finally:
+            if p.poll() is None:p.kill();p.wait()
+            p.stdin.close();p.stderr.close()
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+if __name__=='__main__':unittest.main(verbosity=2)

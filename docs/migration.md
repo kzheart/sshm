@@ -1,5 +1,7 @@
 # 本机 MCP → CLI + Skill 安装记录
 
+> 这是 0.1.x 的历史记录；当前 0.2.0 已改为内置 Go SSH。最新行为与验证见 [0.2.0 验证](v2-validation.md)。
+
 2026-09-14，按用户要求将 Cursor、Codex、Claude Code 的 SSH Manager MCP 替换为 sshm 0.1.1，并将 SSH 配置集中到 `~/.ssh`。
 
 ## 已安装的文件

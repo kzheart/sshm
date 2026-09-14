@@ -1,0 +1,229 @@
+{
+  "results": [
+    {
+      "host": "macmini",
+      "case": "authentication",
+      "status": "passed",
+      "note": "Darwin",
+      "seconds": 0.547
+    },
+    {
+      "host": "macmini",
+      "case": "temporary-workspace",
+      "status": "passed",
+      "seconds": 1.051
+    },
+    {
+      "host": "macmini",
+      "case": "streams-and-exits",
+      "status": "passed",
+      "seconds": 3.659
+    },
+    {
+      "host": "macmini",
+      "case": "binary-stdin-and-eof",
+      "status": "passed",
+      "seconds": 1.199
+    },
+    {
+      "host": "macmini",
+      "case": "script-and-unicode",
+      "status": "passed",
+      "seconds": 0.857
+    },
+    {
+      "host": "macmini",
+      "case": "one-mib-drain-limit",
+      "status": "passed",
+      "seconds": 0.712
+    },
+    {
+      "host": "macmini",
+      "case": "four-concurrent-calls",
+      "status": "passed",
+      "seconds": 0.725
+    },
+    {
+      "host": "macmini",
+      "case": "timeout-and-sibling",
+      "status": "passed",
+      "seconds": 5.029
+    },
+    {
+      "host": "macmini",
+      "case": "sftp-roundtrip-and-no-overwrite",
+      "status": "passed",
+      "seconds": 2.528
+    },
+    {
+      "host": "macmini",
+      "case": "interactive-pty",
+      "status": "passed",
+      "seconds": 1.464
+    },
+    {
+      "host": "macmini",
+      "case": "performance-baseline",
+      "status": "passed",
+      "note": {
+        "latency": {
+          "go": {
+            "samples": 10,
+            "p50_ms": 589.071,
+            "p95_ms": 941.025,
+            "p99_ms": 941.025
+          },
+          "openssh_fresh": {
+            "samples": 10,
+            "p50_ms": 633.609,
+            "p95_ms": 785.758,
+            "p99_ms": 785.758
+          }
+        },
+        "throughput": {
+          "go_65536": {
+            "seconds": 0.9342,
+            "end_to_end_mib_s": 0.0669,
+            "samples": 1
+          },
+          "openssh_fresh_65536": {
+            "seconds": 0.606,
+            "end_to_end_mib_s": 0.1031,
+            "samples": 1
+          },
+          "go_1048576": {
+            "seconds": 1.8509,
+            "end_to_end_mib_s": 0.5403,
+            "samples": 1
+          },
+          "openssh_fresh_1048576": {
+            "seconds": 1.2009,
+            "end_to_end_mib_s": 0.8327,
+            "samples": 1
+          }
+        }
+      },
+      "seconds": 17.862
+    },
+    {
+      "host": "macmini",
+      "case": "cleanup",
+      "status": "passed",
+      "seconds": 0.685
+    },
+    {
+      "host": "tencent",
+      "case": "authentication",
+      "status": "passed",
+      "note": "Linux",
+      "seconds": 0.874
+    },
+    {
+      "host": "tencent",
+      "case": "temporary-workspace",
+      "status": "passed",
+      "seconds": 1.635
+    },
+    {
+      "host": "tencent",
+      "case": "streams-and-exits",
+      "status": "passed",
+      "seconds": 5.707
+    },
+    {
+      "host": "tencent",
+      "case": "binary-stdin-and-eof",
+      "status": "passed",
+      "seconds": 1.761
+    },
+    {
+      "host": "tencent",
+      "case": "script-and-unicode",
+      "status": "passed",
+      "seconds": 0.979
+    },
+    {
+      "host": "tencent",
+      "case": "one-mib-drain-limit",
+      "status": "passed",
+      "seconds": 1.57
+    },
+    {
+      "host": "tencent",
+      "case": "four-concurrent-calls",
+      "status": "passed",
+      "seconds": 0.847
+    },
+    {
+      "host": "tencent",
+      "case": "timeout-and-sibling",
+      "status": "passed",
+      "seconds": 5.024
+    },
+    {
+      "host": "tencent",
+      "case": "sftp-roundtrip-and-no-overwrite",
+      "status": "passed",
+      "seconds": 3.601
+    },
+    {
+      "host": "tencent",
+      "case": "interactive-pty",
+      "status": "passed",
+      "seconds": 1.845
+    },
+    {
+      "host": "tencent",
+      "case": "performance-baseline",
+      "status": "passed",
+      "note": {
+        "latency": {
+          "go": {
+            "samples": 10,
+            "p50_ms": 859.648,
+            "p95_ms": 947.11,
+            "p99_ms": 947.11
+          },
+          "openssh_fresh": {
+            "samples": 10,
+            "p50_ms": 875.199,
+            "p95_ms": 993.441,
+            "p99_ms": 993.441
+          }
+        },
+        "throughput": {
+          "go_65536": {
+            "seconds": 0.9689,
+            "end_to_end_mib_s": 0.0645,
+            "samples": 1
+          },
+          "openssh_fresh_65536": {
+            "seconds": 1.1874,
+            "end_to_end_mib_s": 0.0526,
+            "samples": 1
+          },
+          "go_1048576": {
+            "seconds": 1.1902,
+            "end_to_end_mib_s": 0.8402,
+            "samples": 1
+          },
+          "openssh_fresh_1048576": {
+            "seconds": 2.0574,
+            "end_to_end_mib_s": 0.4861,
+            "samples": 1
+          }
+        }
+      },
+      "seconds": 22.805
+    },
+    {
+      "host": "tencent",
+      "case": "cleanup",
+      "status": "passed",
+      "seconds": 0.954
+    }
+  ],
+  "original_config_and_known_hosts_unchanged": true,
+  "passed": 24,
+  "failed": 0
+}

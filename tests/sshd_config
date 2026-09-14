@@ -13,3 +13,5 @@ AllowUsers tester passwordtester
 LogLevel VERBOSE
 MaxSessions 20
 Subsystem sftp internal-sftp
+
+MaxStartups 64:100:64

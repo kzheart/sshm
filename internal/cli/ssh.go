@@ -1,214 +1,290 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"net"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-func sshOptions(o execOptions) []string {
-	batch := "yes"
-	if o.askpass != "" {
-		batch = "no"
-	}
-	args := []string{
-		"-T", "-o", "BatchMode=" + batch, "-o", "ConnectTimeout=10",
-		"-o", "ClearAllForwardings=yes", "-o", "RemoteCommand=none",
-		"-o", "SessionType=default", "-o", "ForkAfterAuthentication=no",
-		"-o", "StdinNull=no", "-o", "PermitLocalCommand=no",
-	}
-	if o.askpass != "" {
-		args = append(args, "-o", "NumberOfPasswordPrompts=1")
-	}
-	if o.config != "" {
-		args = append(args, "-F", o.config)
-	}
-	return args
+// Every transport in a jump chain belongs to this invocation. A close racing
+// with registration immediately closes the new resource, never loses it.
+type connection struct {
+	mu        sync.Mutex
+	closed    bool
+	resources []io.Closer
+	client    *ssh.Client
 }
 
-// Ask OpenSSH to interpret configuration rather than reimplementing Host,
-// Match, ProxyJump, authentication and identity resolution. -G does not open an
-// SSH connection, but trusted config's Match exec may run local commands.
-func effectiveConfig(ctx context.Context, ssh string, o execOptions) ([]byte, error) {
-	args := append(sshOptions(o), "-G", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "--", o.host, o.command)
-	var out, diag bytes.Buffer
-	w := &limitedWriter{out: &out, limit: 1024 * 1024}
-	e := &limitedWriter{out: &diag, limit: 16384}
-	c := command(ctx, ssh, args, nil, w, e)
-	applyAskpass(c, o.askpass)
-	err := c.Run()
+func (b *connection) own(c io.Closer) {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		c.Close()
+		return
+	}
+	b.resources = append(b.resources, c)
+	b.mu.Unlock()
+}
+func (b *connection) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	r := b.resources
+	b.resources = nil
+	b.mu.Unlock()
+	for _, c := range r {
+		_ = c.Close()
+	}
+	return nil
+}
+
+func authMethods(s server) ([]ssh.AuthMethod, error) {
+	var methods []ssh.AuthMethod
+	if s.KeyPath != "" {
+		b, err := privateRead(s.KeyPath, 1<<20, true)
+		if err != nil {
+			return nil, fmt.Errorf("私钥：%w", err)
+		}
+		var signer ssh.Signer
+		if s.Passphrase != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(b, []byte(s.Passphrase))
+		} else {
+			signer, err = ssh.ParsePrivateKey(b)
+		}
+		if err != nil {
+			return nil, errors.New("无法解析私钥；检查格式与 passphrase")
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	}
+	if s.Password != "" {
+		methods = append(methods, ssh.Password(s.Password), ssh.KeyboardInteractive(func(_, _ string, questions []string, echo []bool) ([]string, error) {
+			// Password-only keyboard-interactive. Never submit passwords as OTP answers.
+			if len(questions) != 1 || len(echo) != 1 || echo[0] {
+				return nil, errors.New("需要交互式多因素认证")
+			}
+			q := strings.ToLower(strings.TrimSpace(questions[0]))
+			if q != "password:" && q != "password" {
+				return nil, errors.New("不支持的认证问题")
+			}
+			return []string{s.Password}, nil
+		}))
+	}
+	if len(methods) == 0 {
+		return nil, errors.New("需要配置 password 或 key_path")
+	}
+	return methods, nil
+}
+
+// Probe against knownhosts to prefer algorithms for keys we actually trust.
+// This is only algorithm selection; the real handshake is verified again.
+type probeKey struct{}
+
+func (probeKey) Type() string                        { return "sshm-probe" }
+func (probeKey) Marshal() []byte                     { return nil }
+func (probeKey) Verify([]byte, *ssh.Signature) error { return errors.New("probe") }
+func trustedAlgorithms(cb ssh.HostKeyCallback, addr string) []string {
+	var ke *knownhosts.KeyError
+	if !errors.As(cb(addr, &net.TCPAddr{}, probeKey{}), &ke) {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, want := range ke.Want {
+		types := []string{want.Key.Type()}
+		if want.Key.Type() == ssh.KeyAlgoRSA {
+			types = []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256}
+		}
+		for _, t := range types {
+			if !seen[t] {
+				seen[t] = true
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+func connect(ctx context.Context, cfg *configuration, alias string) (*connection, error) {
+	names, err := cfg.chain(alias)
 	if err != nil {
-		return nil, fmt.Errorf("OpenSSH 配置解析失败：%w\n%s", err, strings.TrimSpace(diag.String()))
+		return nil, err
 	}
-	if w.dropped > 0 {
-		return nil, errors.New("OpenSSH 有效配置超过 1 MiB，无法生成可靠连接标识")
+	cb, err := readKnownHosts(cfg.KnownHosts)
+	if err != nil {
+		return nil, errors.New("无法读取 known_hosts；请提供有效的可信主机公钥文件")
 	}
-	return out.Bytes(), nil
-}
-
-func controlPath(dir string, config []byte, persist time.Duration, askpass string) string {
-	h := sha256.New()
-	h.Write([]byte("sshm-control-v1\x00"))
-	h.Write(config)
-	// The same endpoint with a different agent must not silently share auth or
-	// forwarded-agent state. Persist is part of the key so its TTL stays truthful.
-	fmt.Fprintf(h, "\x00%s\x00%d\x00%s", os.Getenv("SSH_AUTH_SOCK"), persist, askpass)
-	return filepath.Join(dir, "c-"+hex.EncodeToString(h.Sum(nil))[:32])
-}
-
-func socketAlive(ctx context.Context, ssh, path string) bool {
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	// -O check talks only to the named local socket. No user's Match/ProxyCommand
-	// is evaluated and failure never falls back to opening a network connection.
-	return command(ctx, ssh, []string{"-F", os.DevNull, "-S", path, "-O", "check", "sshm-local-check"}, nil, io.Discard, io.Discard).Run() == nil
-}
-
-func execute(ctx context.Context, ssh string, o execOptions, stdin *os.File, stdout, stderr io.Writer) int {
-	args := sshOptions(o)
-	var unlock func()
-	var socket string
-	if o.persist > 0 {
-		cfg, err := effectiveConfig(ctx, ssh, o)
-		if err != nil {
-			return localFailure(ctx, stderr, err, false)
+	b := &connection{}
+	stop := context.AfterFunc(ctx, func() { b.Close() })
+	// The caller maintains its own cancellation watcher after this function.
+	defer stop()
+	success := false
+	defer func() {
+		if !success {
+			b.Close()
 		}
-		dir, err := privateDir(true)
-		if err != nil {
-			return localFailure(ctx, stderr, err, false)
+	}()
+	for _, name := range names {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		socket = controlPath(dir, cfg, o.persist, o.askpass)
-		unlock, err = acquireLock(ctx, socket+".lock")
+		s := cfg.Servers[name]
+		addr := s.address()
+		auth, err := authMethods(s)
 		if err != nil {
-			return localFailure(ctx, stderr, err, false)
+			return nil, fmt.Errorf("%s：%w", name, err)
 		}
-		if socketAlive(ctx, ssh, socket) {
-			unlock()
-			unlock = nil
-		} else if info, err := os.Lstat(socket); err == nil {
-			if info.Mode()&os.ModeSocket == 0 {
-				unlock()
-				return localFailure(ctx, stderr, fmt.Errorf("控制路径被非 socket 文件占用：%s", socket), false)
+		hopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		var raw net.Conn
+		if b.client == nil {
+			raw, err = (&net.Dialer{}).DialContext(hopCtx, "tcp", addr)
+		} else {
+			raw, err = b.client.DialContext(hopCtx, "tcp", addr)
+		}
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("%s：连接失败", name)
+		}
+		b.own(raw)
+		watch := context.AfterFunc(hopCtx, func() { raw.Close() })
+		var trustErr error
+		clientCfg := &ssh.ClientConfig{User: s.User, Auth: auth, HostKeyAlgorithms: trustedAlgorithms(cb, addr), HostKeyCallback: func(host string, remote net.Addr, key ssh.PublicKey) error {
+			err := cb(host, remote, key)
+			if err != nil {
+				trustErr = fmt.Errorf("%s：主机公钥未受信任或已变化（%s）；请独立核对并更新 known_hosts", name, ssh.FingerprintSHA256(key))
 			}
-			if err := os.Remove(socket); err != nil {
-				unlock()
-				return localFailure(ctx, stderr, err, false)
+			return err
+		}}
+		cc, chans, reqs, handshakeErr := ssh.NewClientConn(raw, addr, clientCfg)
+		watch()
+		hopErr := hopCtx.Err()
+		cancel()
+		if handshakeErr != nil || hopErr != nil {
+			if cc != nil {
+				cc.Close()
 			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			unlock()
-			return localFailure(ctx, stderr, err, false)
+			if trustErr != nil {
+				return nil, trustErr
+			}
+			return nil, fmt.Errorf("%s：SSH 握手或认证失败；检查凭据、算法兼容性及连接期限", name)
 		}
-		args = append(args, "-o", "ControlMaster=auto", "-o", fmt.Sprintf("ControlPersist=%.0f", math.Ceil(o.persist.Seconds())), "-S", socket)
-	} else {
-		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPersist=no", "-S", "none")
+		client := ssh.NewClient(cc, chans, reqs)
+		b.own(client)
+		b.client = client
 	}
-	if o.debug {
-		args = append(args, "-v")
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	args = append(args, "--", o.host, o.command)
-	runCtx, abort := context.WithCancel(ctx)
-	defer abort()
-	out := &limitedWriter{out: stdout, limit: o.maxOutput, abort: abort}
-	diag := &limitedWriter{out: stderr, limit: o.maxOutput, abort: abort}
-	c := command(runCtx, ssh, args, stdin, out, diag)
-	applyAskpass(c, o.askpass)
-	if err := c.Start(); err != nil {
-		if unlock != nil {
-			unlock()
+	success = true
+	return b, nil
+}
+
+func readKnownHosts(path string) (ssh.HostKeyCallback, error) {
+	if _, err := privateRead(path, 8<<20, false); err != nil {
+		return nil, err
+	}
+	return knownhosts.New(path)
+}
+
+func localFailure(ctx context.Context, out io.Writer, err error, started bool) int {
+	state := "远端命令尚未请求执行。"
+	if started {
+		state = "远端可能已执行；不保证远端进程已停止，请先核实状态。"
+	}
+	code := 125
+	kind := "本地/连接失败"
+	if ctx != nil && ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			code = 124
+			kind = "超时"
+		} else {
+			code = 130
+			kind = "已取消"
 		}
+	}
+	fmt.Fprintf(out, "sshm: %s：%v。%s\n", kind, err, state)
+	return code
+}
+
+func execute(ctx context.Context, o execOptions, input *os.File, stdout, stderr io.Writer) int {
+	started := time.Now()
+	cfg, err := loadConfig(o.config)
+	if err != nil {
 		return localFailure(ctx, stderr, err, false)
 	}
-	// Serialize only cold connection establishment, never the remote command.
-	// Once OpenSSH publishes its listening socket, other invocations can attach.
-	done, released := make(chan struct{}), make(chan struct{})
-	if unlock != nil {
-		go func() {
-			defer close(released)
-			defer unlock()
-			tick := time.NewTicker(15 * time.Millisecond)
-			defer tick.Stop()
-			for {
-				select {
-				case <-done:
-					return
-				case <-tick.C:
-					if info, err := os.Lstat(socket); err == nil && info.Mode()&os.ModeSocket != 0 {
-						return
-					}
-				}
-			}
-		}()
-	} else {
-		close(released)
+	b, err := connect(ctx, cfg, o.host)
+	if err != nil {
+		return localFailure(ctx, stderr, err, false)
 	}
-	err := c.Wait()
-	close(done)
-	<-released
-	for _, item := range []struct {
-		name string
-		w    *limitedWriter
-	}{{"stdout", out}, {"stderr", diag}} {
-		if item.w.dropped > 0 {
-			fmt.Fprintf(stderr, "\nsshm: 输出已截断：%s 显示 %d 字节，省略 %d 字节；使用 --max-output 0 保存完整输出。\n", item.name, item.w.written, item.w.dropped)
+	defer b.Close()
+	stop := context.AfterFunc(ctx, func() { b.Close() })
+	defer stop()
+	connected := time.Now()
+	if o.debug {
+		fmt.Fprintf(stderr, "sshm: connect_ms=%.3f\n", float64(connected.Sub(started).Microseconds())/1000)
+	}
+	s, err := b.client.NewSession()
+	if err != nil {
+		return localFailure(ctx, stderr, errors.New("无法建立命令通道"), false)
+	}
+	defer s.Close()
+	out := &limitedWriter{out: contextOutput(ctx, stdout), limit: o.maxOutput, abort: func() { b.Close() }}
+	diag := &limitedWriter{out: contextOutput(ctx, stderr), limit: o.maxOutput, abort: func() { b.Close() }}
+	s.Stdout = out
+	s.Stderr = diag
+	in, err := s.StdinPipe()
+	if err != nil {
+		return localFailure(ctx, stderr, err, false)
+	}
+	// Mark uncertainty before the request, including a lost acknowledgement.
+	if err := s.Start(o.command); err != nil {
+		return localFailure(ctx, stderr, errors.New("执行请求未获确认"), true)
+	}
+	inputCtx, cancelInput := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer in.Close()
+		if input != nil {
+			_, _ = io.Copy(in, &contextReader{ctx: inputCtx, file: input})
 		}
+	}()
+	err = s.Wait()
+	cancelInput()
+	b.Close()
+	<-done
+	if o.debug {
+		fmt.Fprintf(stderr, "sshm: command_ms=%.3f total_ms=%.3f\n", float64(time.Since(connected).Microseconds())/1000, float64(time.Since(started).Microseconds())/1000)
 	}
 	if ctx.Err() != nil {
 		return localFailure(ctx, stderr, ctx.Err(), true)
 	}
 	if out.err != nil || diag.err != nil {
-		return localFailure(ctx, stderr, fmt.Errorf("输出写入失败：%w", errors.Join(out.err, diag.err)), true)
+		return localFailure(ctx, stderr, errors.New("本地输出写入失败"), true)
 	}
-	code := exitCode(err)
-	if code == 255 {
-		fmt.Fprintln(stderr, "\nsshm: SSH 返回 255：可能是连接/认证错误，也可能是远端退出码 255；仅凭此状态无法确认执行结果，请勿自动重试。")
-	} else if err != nil {
-		// A genuine remote 125 should stay unadorned; local I/O errors and
-		// inherited-pipe timeouts must still get a diagnostic even after exit 0.
-		var remote *exec.ExitError
-		if !errors.As(err, &remote) || remote.ExitCode() < 0 {
-			return localFailure(ctx, stderr, err, true)
-		}
+	if out.dropped > 0 {
+		fmt.Fprintf(stderr, "\nsshm: stdout 已截断，省略 %d 字节。\n", out.dropped)
 	}
-	return code
-}
-
-// Reuse OpenSSH's credential-helper mechanism. The CLI never receives or
-// stores the returned credential and stdin stays dedicated to the remote job.
-func applyAskpass(c *exec.Cmd, program string) {
-	if program == "" {
-		return
+	if diag.dropped > 0 {
+		fmt.Fprintf(stderr, "\nsshm: stderr 已截断，省略 %d 字节。\n", diag.dropped)
 	}
-	for _, v := range os.Environ() {
-		if !strings.HasPrefix(v, "SSH_ASKPASS=") && !strings.HasPrefix(v, "SSH_ASKPASS_REQUIRE=") {
-			c.Env = append(c.Env, v)
-		}
+	if err == nil {
+		return 0
 	}
-	c.Env = append(c.Env, "SSH_ASKPASS="+program, "SSH_ASKPASS_REQUIRE=force")
-}
-
-func localFailure(ctx context.Context, out io.Writer, err error, started bool) int {
-	state := "本次远端命令尚未启动。"
-	if started {
-		state = "远端执行结果未知，不能确认远端任务已停止；请勿自动重试。"
+	var exit *ssh.ExitError
+	if errors.As(err, &exit) && exit.ExitStatus() >= 0 {
+		return exit.ExitStatus()
 	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		fmt.Fprintf(out, "\nsshm: 本地等待超时。%s\n", state)
-		return 124
-	}
-	if ctx.Err() != nil {
-		fmt.Fprintf(out, "\nsshm: 本地调用已取消。%s\n", state)
-		return 130
-	}
-	fmt.Fprintf(out, "\nsshm: 本地错误：%v。%s\n", err, state)
-	return 125
+	return localFailure(ctx, stderr, errors.New("连接结束但未收到有效退出码"), true)
 }

@@ -1,0 +1,62 @@
+{
+  "1048576": [
+    {
+      "seconds": 0.0513,
+      "peak_rss_bytes": 13631488,
+      "user_seconds": 0.0,
+      "sys_seconds": 0.0
+    },
+    {
+      "seconds": 0.0403,
+      "peak_rss_bytes": 13844480,
+      "user_seconds": 0.0,
+      "sys_seconds": 0.0
+    },
+    {
+      "seconds": 0.048,
+      "peak_rss_bytes": 13500416,
+      "user_seconds": 0.0,
+      "sys_seconds": 0.0
+    }
+  ],
+  "67108864": [
+    {
+      "seconds": 0.1265,
+      "peak_rss_bytes": 18923520,
+      "user_seconds": 0.04,
+      "sys_seconds": 0.06
+    },
+    {
+      "seconds": 0.119,
+      "peak_rss_bytes": 18579456,
+      "user_seconds": 0.04,
+      "sys_seconds": 0.06
+    },
+    {
+      "seconds": 0.1211,
+      "peak_rss_bytes": 18202624,
+      "user_seconds": 0.04,
+      "sys_seconds": 0.06
+    }
+  ],
+  "268435456": [
+    {
+      "seconds": 0.3624,
+      "peak_rss_bytes": 18317312,
+      "user_seconds": 0.15,
+      "sys_seconds": 0.25
+    },
+    {
+      "seconds": 0.3676,
+      "peak_rss_bytes": 19136512,
+      "user_seconds": 0.16,
+      "sys_seconds": 0.26
+    },
+    {
+      "seconds": 0.3493,
+      "peak_rss_bytes": 18743296,
+      "user_seconds": 0.15,
+      "sys_seconds": 0.24
+    }
+  ]
+}

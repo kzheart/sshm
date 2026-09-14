@@ -9,10 +9,10 @@ import (
 	"sshm/internal/cli"
 )
 
-var version = "0.1.1"
+var version = "0.2.0"
 
 func main() {
-	// Let output errors reach our process cleanup instead of dying immediately
+	// Let output errors reach our connection cleanup instead of dying immediately
 	// on a closed consumer pipe (for example `sshm ... | head`).
 	signal.Ignore(syscall.SIGPIPE)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
