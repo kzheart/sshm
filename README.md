@@ -10,7 +10,7 @@ sshm doctor
 
 ## 安装
 
-本地客户端支持 macOS 和 Linux（arm64 / amd64）。需要系统 OpenSSH；使用者不需要 Go、Node、npm 或 Python。远端可以是提供所需 SSH 能力的任意系统，但实际验证范围见下文。
+本地客户端支持 macOS 和 Linux（arm64 / amd64）。需要系统 OpenSSH；CLI 本体不需要 Go、Node、npm 或 Python。可选的 SSH Manager TOML 认证辅助程序使用 Python 3.11+。远端可以是提供所需 SSH 能力的任意系统，但实际验证范围见下文。
 
 从源码构建需要 Go 1.24+：
 
@@ -30,6 +30,8 @@ make dist
 ```
 
 发布包包含 `sshm`、`install.sh`、本说明和 Skill。解压对应架构的包后可直接运行，或执行其中的安装器。升级用新包重复安装；回退使用旧包。删除已安装的二进制和本 Skill 目录即可卸载，原有 SSH 配置不受影响。
+
+从 SSH Manager 迁移时，可保留原 TOML 作为凭据来源，使用源码中的 `scripts/ssh-manager-askpass.py`。该可选程序默认读取 `~/.ssh/sshm.toml`（可用 `SSHM_CREDENTIALS` 指定其他路径），要求文件属于当前用户且权限为 600；根据 OpenSSH 请求的账号、地址或私钥路径选择凭据，支持跳板和目标分别认证，拒绝未知主机确认、验证码和歧义条目。它不随基础发布包安装。连接字段仍需放入标准 SSH config；本机迁移布局和验证记录见源码中的 `docs/migration.md`。
 
 ## 命令
 
@@ -152,7 +154,7 @@ make integration
 
 ```sh
 python3 tests/live.py \
-  --toml "$HOME/.codex/ssh-config.toml" \
+  --toml "$HOME/.ssh/sshm.toml" \
   --hosts macmini tencent \
   --report /tmp/sshm-live-results.json
 ```
