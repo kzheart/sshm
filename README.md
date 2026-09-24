@@ -124,15 +124,13 @@ sshm exec example --command '远端命令' --max-output 0 > result.bin
 
 任何本地取消都不保证远端整个进程树已停止。确定的多步操作仍可合并到一次命令或脚本，减少通道往返。新版本增加一个短期 Go 进程及缓存连接的内存开销，换取重复调用延迟下降；并非每次首次连接都会更快。
 
-真实延迟、并发、进程与空闲回收验证见 `docs/v3-validation.md`；独立连接基线见 `docs/v2-validation.md`。
-
 ## 验证与开发
 
 ```sh
 make check
 make integration               # Docker 内的隔离真实 sshd
 python3 tests/reuse.py          # 复用/新连接对照、1000 次调用、故障及 60 秒退出
-python3 tests/reuse.py --live macmini tencent --report docs/reuse-live-results.json
+python3 tests/reuse.py --live macmini tencent --report reports/reuse-live-results.json
 python3 tests/memory.py         # 1 MiB、64 MiB、256 MiB 内存与 CPU
 python3 tests/live.py --hosts macmini tencent  # 仅在用户授权目标上执行
 ```

@@ -15,5 +15,6 @@ with Fixture() as f:
             assert rss and cpu
             samples.append({'seconds':round(seconds,4),'peak_rss_bytes':int(rss[1]),'user_seconds':float(cpu[2]),'sys_seconds':float(cpu[3])})
         report[str(size)]=samples
-(ROOT/'docs/performance-memory.json').write_text(json.dumps(report,indent=2)+'\n')
+(ROOT/'reports').mkdir(exist_ok=True)
+(ROOT/'reports/performance-memory.json').write_text(json.dumps(report,indent=2)+'\n')
 print(json.dumps(report))

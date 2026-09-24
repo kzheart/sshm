@@ -97,5 +97,5 @@ def local(report):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--report',type=Path,default=ROOT/'docs/performance-local.json');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--report',type=Path,default=ROOT/'reports/performance-local.json');args=parser.parse_args();args.report.parent.mkdir(parents=True,exist_ok=True)
     report={};local(report);args.report.write_text(json.dumps(report,indent=2)+'\n');print('Saved',args.report)

@@ -146,7 +146,7 @@ class Target:
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--toml',type=Path,default=Path.home()/'.ssh/sshm.toml');parser.add_argument('--hosts',nargs='+',required=True);parser.add_argument('--report',type=Path,default=ROOT/'docs/live-v2-results.json');parser.add_argument('--performance-only',action='store_true');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--toml',type=Path,default=Path.home()/'.ssh/sshm.toml');parser.add_argument('--hosts',nargs='+',required=True);parser.add_argument('--report',type=Path,default=ROOT/'reports/live-v2-results.json');parser.add_argument('--performance-only',action='store_true');args=parser.parse_args();args.report.parent.mkdir(parents=True,exist_ok=True)
     cfg=args.toml.expanduser().resolve();raw=cfg.read_bytes();known=Path.home()/'.ssh/known_hosts';known_before=known.read_bytes()
     servers=tomllib.loads(raw.decode())['ssh_servers'];results=[]
     with tempfile.TemporaryDirectory(prefix='sshm-v2-live-',dir='/tmp') as temp:

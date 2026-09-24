@@ -53,5 +53,6 @@ with Fixture() as f:
     after=resource_count(pid)
     assert after['fd_count']<=before['fd_count']+2
     report['malformed_requests']={'calls':100,'fd_after':after['fd_count']}
-(ROOT/'docs/reuse-fault-results.json').write_text(json.dumps(report,indent=2)+'\n')
+(ROOT/'reports').mkdir(exist_ok=True)
+(ROOT/'reports/reuse-fault-results.json').write_text(json.dumps(report,indent=2)+'\n')
 print(json.dumps(report,indent=2))

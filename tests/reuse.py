@@ -182,7 +182,7 @@ def live(report,hosts):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--live',nargs='*',choices=['macmini','tencent']);parser.add_argument('--report',type=Path,default=ROOT/'docs/reuse-results.json');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--live',nargs='*',choices=['macmini','tencent']);parser.add_argument('--report',type=Path,default=ROOT/'reports/reuse-results.json');args=parser.parse_args();args.report.parent.mkdir(parents=True,exist_ok=True)
     report={}
     try:
         if args.live is not None:live(report,args.live)
