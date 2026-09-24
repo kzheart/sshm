@@ -11,17 +11,40 @@ sshm copy macmini --upload ./file.bin --remote /tmp/file.bin
 
 ## 安装
 
-本地支持 macOS / Linux，arm64 / amd64。发布包解压后运行 `./install.sh --prefix "$HOME/.local" --skill-dir "$HOME/.agents/skills"`。安装器只复制本地二进制和 Skill，不联网，不改 SSH 配置或 PATH。构建依赖会编译进二进制，使用者无需安装它们。
+### 让 AI 一键安装
 
-从源码构建需要 Go 1.26+（启用 Go 自动工具链时可以自动获取）：
+把下面这段话发给 Claude Code、Codex 等 Agent：
+
+```text
+请帮我安装 sshm CLI 和它的 Agent Skill，仓库是 https://github.com/kzheart/sshm 。
+1. 用 `uname -s` 和 `uname -m` 判断平台：Darwin→darwin，Linux→linux；arm64/aarch64→arm64，x86_64→amd64。
+2. 从 https://api.github.com/repos/kzheart/sshm/releases/latest 读取最新版本号 tag（形如 v0.4.0，文件名里的 VERSION 去掉前缀 v）。
+3. 在临时目录下载 https://github.com/kzheart/sshm/releases/download/<tag>/sshm_<VERSION>_<os>_<arch>.tar.gz 和同一 Release 的 SHA256SUMS-<VERSION>，用 shasum -a 256 或 sha256sum 校验通过后再解压。
+4. 进入解压目录运行 `./install.sh --prefix "$HOME/.local" --skill-dir <你自己加载用户级 Skill 的目录>`。Claude Code 用 ~/.claude/skills，Codex 用 ~/.agents/skills；其他 Agent 按其文档选择。
+5. 运行 `~/.local/bin/sshm --help` 确认可用；若 ~/.local/bin 不在 PATH 中，告诉我需要加到哪个 shell 配置文件，不要擅自修改。
+6. 如果 ~/.ssh/sshm.toml 不存在，只告诉我按 README 的“配置”一节创建并 chmod 600，不要替我编造服务器信息。
+```
+
+### 手动安装
+
+支持 macOS / Linux，arm64 / amd64。从 [Releases](https://github.com/kzheart/sshm/releases) 下载对应平台的包，解压后运行：
+
+```sh
+./install.sh --prefix "$HOME/.local" --skill-dir "$HOME/.claude/skills"   # Claude Code
+./install.sh --prefix "$HOME/.local" --skill-dir "$HOME/.agents/skills"   # Codex
+```
+
+安装器只复制本地二进制和 Skill，不联网，不改 SSH 配置或 PATH。升级时用新包重复安装即可。
+
+### 从源码构建
+
+需要 Go 1.26+（启用 Go 自动工具链时可以自动获取）：
 
 ```sh
 make build
-./install.sh --prefix "$HOME/.local" --skill-dir "$HOME/.agents/skills"
-make dist
+./install.sh --prefix "$HOME/.local" --skill-dir "$HOME/.claude/skills"
+make dist   # 生成 macOS/Linux × arm64/amd64 四份发布包和 SHA-256 校验文件
 ```
-
-`make dist` 生成 macOS/Linux × arm64/amd64 四份独立发布包和 SHA-256 校验文件，不上传公共仓库。升级用新包重复安装；回退使用旧包。
 
 ## 配置
 
@@ -49,7 +72,7 @@ proxy_jump = "example"             # 另一条配置的明确别名，可嵌套�
 
 支持密码、私钥、加密私钥口令，以及只询问密码的 keyboard-interactive。验证码、多因素问答、SSH agent 和硬件安全密钥暂未实现。私钥文件也必须仅当前用户可访问。
 
-配置只接受已定义字段，不会静默忽略拼写错误。旧 MCP 的 `readonly/restricted` 等 mode 不会被直接当作无限制配置执行；发现时拒绝加载。相对 `key_path` 和 `known_hosts` 路径以 TOML 所在目录为基准。
+配置只接受已定义字段，不会静默忽略拼写错误。相对 `key_path` 和 `known_hosts` 路径以 TOML 所在目录为基准。
 
 `known_hosts` 是可信公钥记录，不是第二份服务器连接配置。首次连接自动接受并保存新主机公钥，无需输入 yes 或手动配置；文件不存在时自动创建。后续公钥发生变化或被撤销时，在发送认证凭据前拒绝连接并报告指纹。首次连接信任当时收到的公钥，不执行独立身份核验。兼容读取已有 OpenSSH known_hosts 格式，不依赖 OpenSSH 程序。不会执行 `~/.ssh/config`、ProxyCommand 或本地 shell 命令。
 
@@ -101,13 +124,7 @@ sshm exec example --command '远端命令' --max-output 0 > result.bin
 
 任何本地取消都不保证远端整个进程树已停止。确定的多步操作仍可合并到一次命令或脚本，减少通道往返。新版本增加一个短期 Go 进程及缓存连接的内存开销，换取重复调用延迟下降；并非每次首次连接都会更快。
 
-0.3.0 的真实延迟、并发、进程与空闲回收验证见 `docs/v3-validation.md`；0.2.0 的独立连接基线见 `docs/v2-validation.md`。
-
-## 从 0.1.x 迁移
-
-0.2.0 的 `-F` 改为 TOML。删除调用中的 `--askpass`、`--persist`；密码直接从 TOML 读取。交互改用 `sshm shell`，单文件传输改用 `sshm copy`。更新 Agent Skill，避免沿用旧参数。
-
-本机升级会备份旧 CLI、Skill 和迁移文件后，移除旧版生成的 `sshm.conf` Include 与 Python askpass；保留原本的 SSH 配置和 known_hosts。0.1.x 验证与安装文档仅为历史记录。
+真实延迟、并发、进程与空闲回收验证见 `docs/v3-validation.md`；独立连接基线见 `docs/v2-validation.md`。
 
 ## 验证与开发
 

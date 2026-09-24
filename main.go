@@ -9,7 +9,7 @@ import (
 	"sshm/internal/cli"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 func main() {
 	// Let output errors reach our connection cleanup instead of dying immediately

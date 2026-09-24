@@ -2,7 +2,7 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$root"
-version=${1:-0.3.0}
+version=${1:-0.4.0}
 case "$version" in
     ''|*[!0-9A-Za-z._-]*) echo '版本仅允许字母、数字、点、下划线和短横线。' >&2; exit 2 ;;
 esac
