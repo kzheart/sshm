@@ -51,7 +51,7 @@ proxy_jump = "example"             # 另一条配置的明确别名，可嵌套�
 
 配置只接受已定义字段，不会静默忽略拼写错误。旧 MCP 的 `readonly/restricted` 等 mode 不会被直接当作无限制配置执行；发现时拒绝加载。相对 `key_path` 和 `known_hosts` 路径以 TOML 所在目录为基准。
 
-`known_hosts` 是可信公钥记录，不是第二份服务器连接配置。未知或变化的公钥会在发送认证凭据前被拒绝，并报告指纹；应经独立可信渠道核对并配置公钥。兼容读取已有 OpenSSH known_hosts 格式，不依赖 OpenSSH 程序。不会执行 `~/.ssh/config`、ProxyCommand 或本地 shell 命令。
+`known_hosts` 是可信公钥记录，不是第二份服务器连接配置。首次连接自动接受并保存新主机公钥，无需输入 yes 或手动配置；文件不存在时自动创建。后续公钥发生变化或被撤销时，在发送认证凭据前拒绝连接并报告指纹。首次连接信任当时收到的公钥，不执行独立身份核验。兼容读取已有 OpenSSH known_hosts 格式，不依赖 OpenSSH 程序。不会执行 `~/.ssh/config`、ProxyCommand 或本地 shell 命令。
 
 ## 命令
 

@@ -29,6 +29,6 @@ func doctorCommand(ctx context.Context, args []string, stdout, stderr io.Writer,
 		fmt.Fprintln(stdout, "known_hosts：无法读取或格式无效")
 		return 1
 	}
-	fmt.Fprintln(stdout, "known_hosts：可读取")
+	fmt.Fprintln(stdout, "known_hosts：检查通过；首次连接自动记录新主机公钥，文件不存在时自动创建")
 	return 0
 }

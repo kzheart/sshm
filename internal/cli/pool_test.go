@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"os"
 	"runtime"
 	"sync"
@@ -139,11 +140,11 @@ func TestPoolRevalidatesTrustAndCredentials(t *testing.T) {
 	if _, _, _, err = p.acquire(context.Background(), cfg, "test", f.config); err == nil {
 		t.Fatal("credential update used previous authentication")
 	}
-	os.WriteFile(cfg.KnownHosts, nil, 0600)
+	os.WriteFile(cfg.KnownHosts, []byte(knownhosts.Line([]string{cfg.Servers["test"].address()}, testHostKey(t))+"\n"), 0600)
 	s.Password = f.password
 	cfg.Servers["test"] = s
 	if _, _, _, err = p.acquire(context.Background(), cfg, "test", f.config); err == nil {
-		t.Fatal("removed trusted key still accepted")
+		t.Fatal("changed trusted key still accepted")
 	}
 }
 

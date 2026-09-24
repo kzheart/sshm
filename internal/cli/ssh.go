@@ -160,9 +160,9 @@ func connect(ctx context.Context, cfg *configuration, alias string) (*connection
 		watch := context.AfterFunc(hopCtx, func() { raw.Close() })
 		var trustErr error
 		clientCfg := &ssh.ClientConfig{User: s.User, Auth: auth, HostKeyAlgorithms: trustedAlgorithms(cb, addr), HostKeyCallback: func(host string, remote net.Addr, key ssh.PublicKey) error {
-			err := cb(host, remote, key)
+			err := verifyHostKey(hopCtx, cfg.KnownHosts, host, remote, key)
 			if err != nil {
-				trustErr = fmt.Errorf("%s：主机公钥未受信任或已变化（%s）；请独立核对并更新 known_hosts", name, ssh.FingerprintSHA256(key))
+				trustErr = fmt.Errorf("%s：%w", name, err)
 			}
 			return err
 		}}
@@ -188,13 +188,6 @@ func connect(ctx context.Context, cfg *configuration, alias string) (*connection
 	}
 	success = true
 	return b, nil
-}
-
-func readKnownHosts(path string) (ssh.HostKeyCallback, error) {
-	if _, err := privateRead(path, 8<<20, false); err != nil {
-		return nil, err
-	}
-	return knownhosts.New(path)
 }
 
 func localFailure(ctx context.Context, out io.Writer, err error, started bool) int {

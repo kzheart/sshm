@@ -43,7 +43,7 @@ func connectionKey(cfg *configuration, alias string) ([32]byte, error) {
 	if err != nil {
 		return [32]byte{}, err
 	}
-	known, err := privateRead(cfg.KnownHosts, 8<<20, false)
+	known, err := knownHostsContents(cfg.KnownHosts)
 	if err != nil {
 		return [32]byte{}, err
 	}

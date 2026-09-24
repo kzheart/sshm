@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/sys/unix"
 )
 
@@ -278,10 +279,10 @@ func TestHostKeyAndAuthenticationFailuresAreRedacted(t *testing.T) {
 	}
 	os.WriteFile(f.config, raw, 0600)
 	cfg, _ := loadConfig(f.config)
-	os.WriteFile(cfg.KnownHosts, nil, 0600)
+	os.WriteFile(cfg.KnownHosts, []byte(knownhosts.Line([]string{cfg.Servers["test"].address()}, testHostKey(t))+"\n"), 0600)
 	code, _, diag = runFixture(f, "ok", nil)
 	if code != 125 || !bytes.Contains(diag, []byte("SHA256:")) {
-		t.Fatal("unknown host key was accepted")
+		t.Fatal("changed host key was accepted")
 	}
 }
 func TestConfigurationValidationAndSecretRedaction(t *testing.T) {

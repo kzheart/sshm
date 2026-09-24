@@ -261,9 +261,18 @@ class Integration(unittest.TestCase):
         cfg=self.f.root/'invalid.toml';cfg.write_text(self.f.config.read_text().replace(self.f.password,'wrong-password'));cfg.chmod(0o600)
         p=capture([str(BINARY),'exec','password','-F',str(cfg),'--command','true'])
         self.assertEqual(p.returncode,125);self.assertNotIn(b'wrong-password',p.stderr)
-        cfg.write_text(self.f.config.read_text().replace(str(self.f.known),str(self.f.root/'empty-known')));(self.f.root/'empty-known').write_text('')
-        p=capture([str(BINARY),'exec','fixture','-F',str(cfg),'--command','true'])
+        known=self.f.root/'first-connection'/'known_hosts'
+        cfg.write_text(self.f.config.read_text().replace(str(self.f.known),str(known)))
+        p=capture([str(BINARY),'exec','password','-F',str(cfg),'--command','true'])
+        self.assertEqual(p.returncode,0,p.stderr)
+        saved=known.read_bytes();self.assertTrue(saved.strip())
+        p=capture([str(BINARY),'exec','password','-F',str(cfg),'--command','true','--fresh'])
+        self.assertEqual(p.returncode,0,p.stderr);self.assertEqual(known.read_bytes(),saved)
+        changed=f'[127.0.0.1]:{self.f.port} '+(self.f.root/'client.pub').read_text()
+        known.write_text(changed)
+        p=capture([str(BINARY),'exec','password','-F',str(cfg),'--command','true'])
         self.assertEqual(p.returncode,125);self.assertIn(b'SHA256:',p.stderr)
+        self.assertEqual(known.read_text(),changed)
 
     def test_16_closed_output_consumer(self):
         p=subprocess.Popen(self.f.argv('head -c 20971520 /dev/zero','fixture','--max-output','0'),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
